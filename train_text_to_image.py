@@ -59,7 +59,7 @@ check_min_version("0.18.0.dev0")
 logger = get_logger(__name__, log_level="INFO")
 
 DATASET_NAME_MAPPING = {
-    "lambdalabs/pokemon-blip-captions": ("image", "text"),
+    "ffhq256": ("image", "text"),  # args.dataset_name = "ffhq256"
 }
 
 
@@ -203,9 +203,9 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Simple example of a training script.")
+    parser = argparse.ArgumentParser(description="Train Stable Diffusion on FFHQ256 dataset.")
     parser.add_argument(
-        "--input_perturbation", type=float, default=0, help="The scale of input perturbation. Recommended 0.1."
+        "--input_perturbation", type=float, default=0, help="The scale of input perturbation. Recommended 0.1." #TODO: may use 0.1
     )
     parser.add_argument(
         "--pretrained_model_name_or_path",
@@ -215,7 +215,7 @@ def parse_args():
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
     parser.add_argument(
-        "--revision",
+        "--revision", # TODO: it is necessary to set revision to control unified model version
         type=str,
         default=None,
         required=False,
@@ -284,11 +284,11 @@ def parse_args():
         default=None,
         help="The directory where the downloaded models and datasets will be stored.",
     )
-    parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
+    parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.") #TODO: we may set a fixed seed for training
     parser.add_argument(
         "--resolution",
         type=int,
-        default=512,
+        default=512, # TODO: figure out if we can use 256*256
         help=(
             "The resolution for input images, all the images in the train/validation dataset will be resized to this"
             " resolution"
@@ -432,7 +432,7 @@ def parse_args():
     parser.add_argument(
         "--report_to",
         type=str,
-        default="tensorboard",
+        default="tensorboard", # TODO: use wandb
         help=(
             'The integration to report the results and logs to. Supported platforms are `"tensorboard"`'
             ' (default), `"wandb"` and `"comet_ml"`. Use `"all"` to report to all integrations.'
