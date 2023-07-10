@@ -217,7 +217,7 @@ def main(args):
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
             t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
             model_kwargs = dict() #y=y
-            loss_dict = diffusion.training_losses_with_assistant(model, classifier, x, t, model_kwargs)
+            loss_dict = diffusion.training_losses_with_assistant(model, x, t, model_kwargs)
             pred_e, gt_e = loss_dict["pred_e"], loss_dict["gt_e"]
             dm_loss = loss_dict["loss"].mean()
             clf_output = classifier(pred_e)
@@ -252,12 +252,13 @@ def main(args):
                 d_avg_loss = torch.tensor(d_running_loss / log_steps, device=device)
                 dist.all_reduce(d_avg_loss, op=dist.ReduceOp.SUM)
                 d_avg_loss = d_avg_loss.item() / dist.get_world_size()
-                logger.info(f"(step={train_steps:07d}) Train Loss: {d_avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
-                
+
                 c_avg_loss = torch.tensor(c_running_loss / log_steps, device=device)
                 dist.all_reduce(c_avg_loss, op=dist.ReduceOp.SUM)
                 c_avg_loss = c_avg_loss.item() / dist.get_world_size()
-                logger.info(f"(step={train_steps:07d}) Train Loss: {c_avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+
+                logger.info(f"(step={train_steps:07d}) D_Train Loss: {d_avg_loss:.4f}, C_Train Loss: {c_avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+
                 # Reset monitoring variables:
                 d_running_loss = 0
                 c_running_loss = 0
@@ -300,7 +301,7 @@ if __name__ == "__main__":
     parser.add_argument("--global-seed", type=int, default=0)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--log-every", type=int, default=100)
+    parser.add_argument("--log-every", type=int, default=1)
     parser.add_argument("--ckpt-every", type=int, default=50_000)
     parser.add_argument("--tau", type=float, default=0.9)
     parser.add_argument("--hidden_size", type=int, default=384)
