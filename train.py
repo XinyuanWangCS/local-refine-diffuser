@@ -198,6 +198,7 @@ def main(args):
     train_steps = 0
     log_steps = 0
     d_running_loss = 0
+    c_running_loss = 0
     start_time = time()
 
     tau = args.tau
@@ -210,6 +211,7 @@ def main(args):
         for x, _ in loader:
             x = x.to(device)
 
+            # train diffusion model 
             with torch.no_grad():
                 # Map input images to latent space + normalize latents:
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
@@ -226,9 +228,19 @@ def main(args):
             d_opt.step()
             update_ema(ema, model.module)
 
-            
+            # train classifier
+            class_label = torch.cat([torch.zeros_like(clf_output), torch.ones_like(clf_output)]).to(device)
+            clf_input = torch.cat([pred_e.detach(), gt_e], dim=0)
+            clf_output = classifier(clf_input)
+            c_loss = bceloss(clf_output, class_label)
+            c_opt.zero_grad()
+            c_loss.backward()
+            c_opt.step()
+
             # Log loss values:
             d_running_loss += d_loss.item()
+            c_running_loss += c_loss.item()
+
             log_steps += 1
             train_steps += 1
             if train_steps % args.log_every == 0:
@@ -237,12 +249,19 @@ def main(args):
                 end_time = time()
                 steps_per_sec = log_steps / (end_time - start_time)
                 # Reduce loss history over all processes:
-                avg_loss = torch.tensor(running_loss / log_steps, device=device)
-                dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
-                avg_loss = avg_loss.item() / dist.get_world_size()
-                logger.info(f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+                d_avg_loss = torch.tensor(d_running_loss / log_steps, device=device)
+                dist.all_reduce(d_avg_loss, op=dist.ReduceOp.SUM)
+                d_avg_loss = d_avg_loss.item() / dist.get_world_size()
+                logger.info(f"(step={train_steps:07d}) Train Loss: {d_avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+                
+                c_avg_loss = torch.tensor(c_running_loss / log_steps, device=device)
+                dist.all_reduce(c_avg_loss, op=dist.ReduceOp.SUM)
+                c_avg_loss = c_avg_loss.item() / dist.get_world_size()
+                logger.info(f"(step={train_steps:07d}) Train Loss: {c_avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
                 # Reset monitoring variables:
-                running_loss = 0
+                d_running_loss = 0
+                c_running_loss = 0
+
                 log_steps = 0
                 start_time = time()
 
@@ -252,7 +271,8 @@ def main(args):
                     checkpoint = {
                         "model": model.module.state_dict(),
                         "ema": ema.state_dict(),
-                        "opt": opt.state_dict(),
+                        "d_opt": d_opt.state_dict(),
+                        "c_opt": c_opt.state_dict(),
                         "args": args
                     }
                     checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}.pt"
