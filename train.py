@@ -8,6 +8,7 @@
 A minimal training script for DiT using PyTorch DDP.
 """
 import torch
+import torch.nn as nn
 # the first flag below was False when we tested this script but True makes A100 training a lot faster:
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -30,6 +31,9 @@ import os
 from models import DiT_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
+
+from model_uncondition import DiT_Uncondition
+from patch_classifier import PatchClassifier
 
 #from datasets import load_dataset
 
@@ -140,21 +144,24 @@ def main(args):
     # Create model:
     assert args.image_size % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
     latent_size = args.image_size // 8
-    model = DiT_models[args.model]( # 用latent_size和num_classes创建DiT
-        input_size=latent_size,
-        num_classes=args.num_classes
-    )
+    hidden_size = args.hidden_size
+    patch_size = args.patch_size
+    model = DiT_Uncondition(depth=12, hidden_size=hidden_size, patch_size=patch_size, num_heads=6,)
+    classifier = PatchClassifier(hidden_size=hidden_size, patch_size=patch_size)
+
     # Note that parameter initialization is done within the DiT constructor
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     requires_grad(ema, False)
     model = DDP(model.to(device), device_ids=[rank]) # DataParrallel
+    classifier = DDP(classifier.to(device), device_ids=[rank])
+
     diffusion = create_diffusion(timestep_respacing="")  # default: 1000 steps, linear noise schedule
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
-    opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
-
+    d_opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
+    c_opt = torch.optim.AdamW(classifier.parameters(), lr=1e-4, weight_decay=0)
     # Setup data:
     transform = transforms.Compose([
         transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)),
@@ -190,32 +197,38 @@ def main(args):
     # Variables for monitoring/logging purposes:
     train_steps = 0
     log_steps = 0
-    running_loss = 0
+    d_running_loss = 0
     start_time = time()
+
+    tau = args.tau
+    bceloss = nn.BCELoss()
 
     logger.info(f"Training for {args.epochs} epochs...")
     for epoch in range(args.epochs):
         sampler.set_epoch(epoch)
         logger.info(f"Beginning epoch {epoch}...")
-        #for x, y in loader:
-        for x in loader:
+        for x, _ in loader:
             x = x.to(device)
-            y = torch.zeros(len(x))
-            y = y.to(device)
+
             with torch.no_grad():
                 # Map input images to latent space + normalize latents:
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
             t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
-            model_kwargs = dict(y=y)
-            loss_dict = diffusion.training_losses(model, x, t, model_kwargs)
-            loss = loss_dict["loss"].mean()
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
+            model_kwargs = dict() #y=y
+            loss_dict = diffusion.training_losses_with_assistant(model, classifier, x, t, model_kwargs)
+            pred_e, gt_e = loss_dict["pred_e"], loss_dict["gt_e"]
+            dm_loss = loss_dict["loss"].mean()
+            clf_output = classifier(pred_e)
+            clf_loss = (1-clf_output).abs().mean()
+            d_loss = tau * dm_loss + (1-tau) * clf_loss
+            d_opt.zero_grad()
+            d_loss.backward()
+            d_opt.step()
             update_ema(ema, model.module)
 
+            
             # Log loss values:
-            running_loss += loss.item()
+            d_running_loss += d_loss.item()
             log_steps += 1
             train_steps += 1
             if train_steps % args.log_every == 0:
@@ -269,5 +282,8 @@ if __name__ == "__main__":
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--ckpt-every", type=int, default=50_000)
+    parser.add_argument("--tau", type=float, default=0.9)
+    parser.add_argument("--hidden_size", type=int, default=384)
+    parser.add_argument("--patch_size", type=int, default=4)
     args = parser.parse_args()
     main(args)
