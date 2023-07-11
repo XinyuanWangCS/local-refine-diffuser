@@ -787,7 +787,7 @@ class GaussianDiffusion:
 
         return terms
     
-    def training_losses_with_assistant(self, model, x_start, t, model_kwargs=None, noise=None):
+    def training_losses_step_output(self, model, x_start, t, model_kwargs=None, noise=None):
         """
         Compute training losses for a single timestep.
         :param model: the model to evaluate loss on.
@@ -862,6 +862,8 @@ class GaussianDiffusion:
 
         terms['pred_e'] = model_output
         terms['gt_e'] = target
+        terms['pred_xt'] = self.q_sample(x_start=x_start, t=t, noise=model_output)
+        terms['gt_xt'] = self.q_sample(x_start=x_start, t=t, noise=target)
         return terms
     
     def _prior_bpd(self, x_start):
