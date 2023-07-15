@@ -1,49 +1,34 @@
 from cleanfid import fid
 import os
-import logging
-import shutil
-import random
+from tqdm import tqdm
+import argparse
+from collections import defaultdict
+import pandas as pd
 
-from model_uncondition import DiT_Uncondition
+def main(args):
+    experiment_dir = args.experiment_dir
+    #checkpoint_dir = f"{experiment_dir}/checkpoints"  # Stores saved model checkpoints
+    sample_dir = f"{experiment_dir}/fid_samples"
 
-checkpoint_dir = "./results/000-DiT-S-4/checkpoints/"
-sample_dir = './sample_img/'
-train_set = './dataset_img'
+    train_set_dir = args.train_set_dir
+    results = []
 
-#model = DiT_Uncondition(depth=12, hidden_size=384, patch_size=4, num_heads=6,)
+    for ckpt_name in sorted(os.listdir(sample_dir), key=int): #digit names
+        # Make a new directory inside the checkpoint's directory for the sampled images
+        sample_dir_path = os.path.join(sample_dir, ckpt_name) #e.g. "./results/001-DiT-S-4/checkpoints/0000001/sampled_images"
+        print('------------------------------------------------------------')
+        print(f'Evaluating: {sample_dir_path}')
+        fid_score = fid.compute_fid(train_set_dir, sample_dir_path, mode = 'clean')
+        kid_score = fid.compute_kid(train_set_dir, sample_dir_path, mode = 'clean')
 
-for filename in sorted(os.listdir(checkpoint_dir), key=int): #digit names
-    new_file_path = f"{checkpoint_dir}/{filename}" #e.g. "./results/001-DiT-S-4/checkpoints/0000001"
+        results.append({'ckpt_name':ckpt_name, 'fid':fid_score, 'kid':kid_score})
+        print(f'fid: {fid_score} kid: {kid_score}')
+    results = pd.DataFrame(results)
+    results.to_excel(os.path.join(experiment_dir, 'eval_scores.xlsx'))
 
-    # Make a new directory inside the checkpoint's directory for the sampled images
-    image_dir_path = os.path.join(new_file_path, 'sampled_images') #e.g. "./results/001-DiT-S-4/checkpoints/0000001/sampled_images"
-    os.makedirs(image_dir_path, exist_ok=True)
-
-    sample_dir_path = os.path.join(sample_dir, filename) #e.g. "./sample_img/0000001"
-    
-    if os.path.isdir(sample_dir_path):
-        all_files = [f for f in os.listdir(sample_dir_path) if f.endswith('.png')]
-        selected_files = random.sample(all_files, 50)
-        for file_name in selected_files: #.png names
-            src_file_path = os.path.join(sample_dir_path, file_name) #e.g. ""./sample_img/0000001/0000001.png"
-            dest_file_path = os.path.join(image_dir_path, file_name) #e.g. "./results/001-DiT-S-4/checkpoints/0000001/sampled_images/0000001.png"
-            shutil.copy(src_file_path, dest_file_path)
-    
-    print(f'done for {filename}')
-
-
-    fid_score = fid.compute_fid(train_set, f'{sample_dir}/{filename}', mode = 'clean')
-    kid_score = fid.compute_kid(train_set, f'{sample_dir}/{filename}', mode = 'clean')
-
-    # Set up logger
-    logger = logging.getLogger(filename)
-    logger.setLevel(logging.INFO)
-    handler = logging.FileHandler(os.path.join(new_file_path, 'scores.log'))
-    logger.addHandler(handler)
-
-    # Log the fid_score and kid_score
-    logger.info(f'FID score: {fid_score}')
-    logger.info(f'KID score: {kid_score}')
-
-    # Remove the handler at the end
-    logger.removeHandler(handler)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--experiment_dir", type=str, required=True)
+    parser.add_argument("--train_set_dir", type=str, required=True)
+    args = parser.parse_args()
+    main(args)

@@ -148,10 +148,10 @@ def generate_samples(ckpt_str, fid_dir, model, diffuser, vae, rank, device, late
 
         for i, img in enumerate(samples):
             index = i * dist.get_world_size() + rank + total
-            Image.fromarray(img).save(f'{ckpt_fid_samples_dir}/{index:07d}.png')
-            if index+1 == num_samples:
+            if index >= num_samples:
                 return
-
+            Image.fromarray(img).save(f'{ckpt_fid_samples_dir}/{index:07d}.png')
+            
         total += global_batch_size
 
 
@@ -174,21 +174,16 @@ def main(args):
     torch.manual_seed(seed)
     torch.cuda.set_device(device)
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
-    num_sampling_steps = 250
+    num_sampling_steps = args.num_sampling_steps
 
-    experiment_index = len(glob(f"{args.results_dir}/*"))
-    model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
-    experiment_dir = f"{args.results_dir}/{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
-    checkpoint_dir = f"{experiment_dir}/checkpoints"  # Stores saved model checkpoints
-    fid_samples_dir = f"{experiment_dir}/fid_samples"
-    example_samples_dir = f"{experiment_dir}/example_samples_dir"
     # Setup an experiment folder:
     if rank == 0:
+        experiment_index = len(glob(f"{args.results_dir}/*"))
+        dataset_name = args.data_path.split('/')[-1]
+        model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
+        experiment_dir = f"{args.results_dir}/{dataset_name}-{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
         os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
         os.makedirs(experiment_dir, exist_ok=True)
-        os.makedirs(checkpoint_dir, exist_ok=True)
-        os.makedirs(fid_samples_dir, exist_ok=True)
-        os.makedirs(example_samples_dir, exist_ok=True)
 
         logger = create_logger(experiment_dir)
         logger.info(f"Experiment directory created at {experiment_dir}")
@@ -253,6 +248,12 @@ def main(args):
     d_running_loss = 0
     start_time = time()
 
+    if rank != 0:
+        experiment_index = len(glob(f"{args.results_dir}/*"))-1
+        dataset_name = args.data_path.split('/')[-1]
+        model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
+        experiment_dir = f"{args.results_dir}/{dataset_name}-{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
+
     logger.info(f"Total epoch number: {args.epochs}.")
     for epoch in range(args.epochs):
         model.train()
@@ -301,15 +302,17 @@ def main(args):
 
         # Save DiT checkpoint:
         if epoch % args.ckpt_every == 0 and epoch > 0:
-            torch.cuda.synchronize() # ?: 有什么特殊作用
+            
             if rank == 0:
+                #torch.cuda.synchronize() # ?: 有什么特殊作用
                 checkpoint = {
                     "model": model.module.state_dict(),
                     "ema": ema.state_dict(),
                     "d_opt": d_opt.state_dict(),
                     "args": args
                 }
-
+                checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
+                os.makedirs(checkpoint_dir, exist_ok=True)
                 checkpoint_path_fin = os.path.join(checkpoint_dir, f'{epoch:07d}.pt')
                 torch.save(checkpoint, checkpoint_path_fin)
                 logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
@@ -319,6 +322,8 @@ def main(args):
             torch.cuda.synchronize() # ?: 有什么特殊作用
             model.eval()
             with torch.no_grad():
+                fid_samples_dir = os.path.join(experiment_dir, 'fid_samples')
+                os.makedirs(fid_samples_dir, exist_ok=True)
                 generate_samples(ckpt_str = f'{epoch:07d}',
                                  fid_dir = fid_samples_dir,
                                  model=model, 
@@ -332,16 +337,13 @@ def main(args):
                 
                 logger.info(f"Saved {args.fid_samples} images for {epoch}th epoch")
 
-    model.eval()  # important! This disables randomized embedding dropout
-    # do any sampling/FID calculation/etc. with ema (or model) in eval mode ...
-
     logger.info("Done!")
     cleanup()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-path", type=str, required=True)
+    parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--results-dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-B/4")
     parser.add_argument("--image-size", type=int, choices=[256, 512], default=128)
@@ -355,5 +357,6 @@ if __name__ == "__main__":
     parser.add_argument("--tau", type=float, default=0.9)
     parser.add_argument("--fid_samples", type=int, default=1000)
     parser.add_argument("--example_samples", type=int, default=50)
+    parser.add_argument("--num_sampling_steps", type=int, default=250)
     args = parser.parse_args()
     main(args)
