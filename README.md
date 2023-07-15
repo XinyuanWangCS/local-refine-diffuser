@@ -17,7 +17,7 @@ torchrun --nnodes=1 --nproc_per_node=4 train_baseline_with_eval.py --model DiT_U
 Evaluate trained checkpoins:
 example: the trained example above and lfw dataset
 ```bash
-!python eval.py --experiment_dir results/lfw-000-DiT_Uncondition-B-4 --train_set_dir dataset/images/lfw
+python eval.py --experiment_dir results/lfw-000-DiT_Uncondition-B-4 --train_set_dir dataset/images/lfw
 ```
 
 Memory requirement:
