@@ -23,9 +23,12 @@ from torchvision.utils import save_image  # for saving generated samples
 from torchvision.models import inception_v3
 from torchvision.transforms import functional as F
 from torchvision import transforms
+from diffusion import create_diffusion
+from diffusers.models import AutoencoderKL
 from cleanfid import fid
 import numpy as np
 from scipy.linalg import sqrtm
+from tqdm import tqdm
 from collections import OrderedDict
 from PIL import Image
 from copy import deepcopy
@@ -35,11 +38,9 @@ import argparse
 import logging
 import os
 
-from models import DiT_models
-from model_uncondition import DiT_un_models
+from model_uncondition import DiT_Uncondition_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
-
 
 #################################################################################
 #                             Training Helper Functions                         #
@@ -50,13 +51,13 @@ def update_ema(ema_model, model, decay=0.9999):
     """
     Step the EMA model towards the current model.
     """
-    ema_params = OrderedDict(ema_model.named_parameters())
+    ema_params = OrderedDict(ema_model.named_parameters()) # Dict(name, parameter)
     model_params = OrderedDict(model.named_parameters())
 
     for name, param in model_params.items():
         # TODO: Consider applying only to params that require_grad to avoid small numerical changes of pos_embed
-        ema_params[name].mul_(decay).add_(param.data, alpha=1 - decay)
-
+        ema_params[name].mul_(decay).add_(param.data, alpha=1 - decay) # add_用于权重缩减, ema_params = decay * ema_params + (1-decay) * parram
+        # param.data绕过自动微分，不会计算param的梯度 => param.detach()
 
 def requires_grad(model, flag=True):
     """
@@ -65,21 +66,19 @@ def requires_grad(model, flag=True):
     for p in model.parameters():
         p.requires_grad = flag
 
-
 def cleanup():
     """
     End DDP training.
     """
     dist.destroy_process_group()
 
-
 def create_logger(logging_dir):
     """
     Create a logger that writes to a log file and stdout.
     """
-    if dist.get_rank() == 0:  # real logger
+    if dist.get_rank() == 0:  # real logger: 只有排名为0的进程执行logging
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging.INFO, # 记录级别为INFO
             format='[\033[34m%(asctime)s\033[0m] %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S',
             handlers=[logging.StreamHandler(), logging.FileHandler(f"{logging_dir}/log.txt")]
@@ -89,7 +88,6 @@ def create_logger(logging_dir):
         logger = logging.getLogger(__name__)
         logger.addHandler(logging.NullHandler())
     return logger
-
 
 def center_crop_arr(pil_image, image_size):
     """
@@ -111,79 +109,50 @@ def center_crop_arr(pil_image, image_size):
     crop_x = (arr.shape[1] - image_size) // 2
     return Image.fromarray(arr[crop_y: crop_y + image_size, crop_x: crop_x + image_size])
 
-def generate_samples(model, num_samples=20):
-    #init random noise
-    noise = torch.randn(num_samples, model.in_channels, model.patch_size, model.patch_size, device=model.device)
+#################################################################################
+#                          Sample images for FID                                #
+#################################################################################
 
-    #reverse diffusion
-    for t in reversed(range(model.blocks.depth)):
-        noise = model(noise, torch.tensor([t]), None)
+def generate_samples(ckpt_str, fid_dir, model, diffuser, vae, rank, device, latent_size=32, num_samples=1000, n=16):
+    # Create random noise for input
+    global_batch_size = n * dist.get_world_size()
+    
+    # To make things evenly-divisible, we'll sample a bit more than we need and then discard the extra samples:
+    total_samples = int(math.ceil(num_samples / global_batch_size) * global_batch_size)
+    
+        
 
-    return noise
+    assert total_samples % dist.get_world_size() == 0, "total_samples must be divisible by world_size"
+    samples_needed_this_gpu = int(total_samples // dist.get_world_size())
+    assert samples_needed_this_gpu % n == 0, "samples_needed_this_gpu must be divisible by the per-GPU batch size"
+    iterations = int(samples_needed_this_gpu // n)
+    if rank == 0:
+        print(f"Total number of images that will be sampled: {total_samples}")
+        print(f'sample needed :{samples_needed_this_gpu}, iterations: {iterations}')
 
-#this part taken from https://github.com/sbarratt/inception-score-pytorch/blob/master/inception_score.py 
-def inception_score(imgs, cuda=True, batch_size=32, resize=False, splits=1):
-    """Computes the inception score of the generated images imgs
+    ckpt_fid_samples_dir = os.path.join(fid_dir, ckpt_str)
+    os.makedirs(ckpt_fid_samples_dir, exist_ok=True)
 
-    imgs -- Torch dataset of (3xHxW) numpy images normalized in the range [-1, 1]
-    cuda -- whether or not to run on GPU
-    batch_size -- batch size for feeding into Inception v3
-    splits -- number of splits
-    """
-    N = len(imgs)
+    total = 0
+    pbar = range(iterations)
+    pbar = tqdm(pbar) if rank == 0 else pbar
+    
+    for _ in pbar:
+        z = torch.randn((n, 4, latent_size, latent_size)).to(device)
+        samples = diffuser.p_sample_loop(
+            model.forward, z.shape, z, clip_denoised = False, device = device
+        )
+        
+        samples = vae.decode(samples / 0.18215).sample
+        samples = torch.clamp(127.5 * samples + 128.0, 0, 255).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
 
-    assert batch_size > 0
-    assert N > batch_size
+        for i, img in enumerate(samples):
+            index = i * dist.get_world_size() + rank + total
+            Image.fromarray(img).save(f'{ckpt_fid_samples_dir}/{index:07d}.png')
+            if index+1 == num_samples:
+                return
 
-    # Set up dtype
-    if cuda:
-        dtype = torch.cuda.FloatTensor
-    else:
-        if torch.cuda.is_available():
-            print("WARNING: You have a CUDA device, so you should probably set cuda=True")
-        dtype = torch.FloatTensor
-
-    # Set up dataloader
-    dataloader = torch.utils.data.DataLoader(imgs, batch_size=batch_size)
-
-    # Load inception model
-    inception_model = inception_v3(pretrained=True, transform_input=False).type(dtype)
-    inception_model.eval();
-    up = nn.Upsample(size=(299, 299), mode='bilinear').type(dtype)
-    def get_pred(x):
-        if resize:
-            x = up(x)
-        x = inception_model(x)
-        return F.softmax(x).data.cpu().numpy()
-
-    # Get predictions
-    preds = np.zeros((N, 1000))
-
-    for i, batch in enumerate(dataloader, 0):
-        batch = batch.type(dtype)
-        batchv = Variable(batch)
-        batch_size_i = batch.size()[0]
-
-        preds[i*batch_size:i*batch_size + batch_size_i] = get_pred(batchv)
-
-    # Now compute the mean kl-div
-    split_scores = []
-
-    for k in range(splits):
-        part = preds[k * (N // splits): (k+1) * (N // splits), :]
-        py = np.mean(part, axis=0)
-        scores = []
-        for i in range(part.shape[0]):
-            pyx = part[i, :]
-            scores.append(entropy(pyx, py))
-        split_scores.append(np.exp(np.mean(scores)))
-
-    return np.mean(split_scores), np.std(split_scores)
-
-def entropy(p, q):
-    p = np.asarray(p)
-    q = np.asarray(q)
-    return -np.sum(p*np.log(q + 1e-10))
+        total += global_batch_size
 
 
 #################################################################################
@@ -197,7 +166,7 @@ def main(args):
     assert torch.cuda.is_available(), "Training currently requires at least one GPU."
 
     # Setup DDP:
-    dist.init_process_group("nccl")
+    dist.init_process_group("nccl") # backend: NVIDIA Collective Communications Library（NCCL）
     assert args.global_batch_size % dist.get_world_size() == 0, f"Batch size must be divisible by world size."
     rank = dist.get_rank()
     device = rank % torch.cuda.device_count()
@@ -205,15 +174,22 @@ def main(args):
     torch.manual_seed(seed)
     torch.cuda.set_device(device)
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
+    num_sampling_steps = 250
 
+    experiment_index = len(glob(f"{args.results_dir}/*"))
+    model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
+    experiment_dir = f"{args.results_dir}/{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
+    checkpoint_dir = f"{experiment_dir}/checkpoints"  # Stores saved model checkpoints
+    fid_samples_dir = f"{experiment_dir}/fid_samples"
+    example_samples_dir = f"{experiment_dir}/example_samples_dir"
     # Setup an experiment folder:
     if rank == 0:
         os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
-        experiment_index = len(glob(f"{args.results_dir}/*"))
-        model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
-        experiment_dir = f"{args.results_dir}/{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
-        checkpoint_dir = f"{experiment_dir}/checkpoints"  # Stores saved model checkpoints
+        os.makedirs(experiment_dir, exist_ok=True)
         os.makedirs(checkpoint_dir, exist_ok=True)
+        os.makedirs(fid_samples_dir, exist_ok=True)
+        os.makedirs(example_samples_dir, exist_ok=True)
+
         logger = create_logger(experiment_dir)
         logger.info(f"Experiment directory created at {experiment_dir}")
     else:
@@ -222,21 +198,22 @@ def main(args):
     # Create model:
     assert args.image_size % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
     latent_size = args.image_size // 8
-    model = DiT_un_models[args.model](
-        input_size=latent_size,
-        num_classes=args.num_classes
+
+    model = DiT_Uncondition_models[args.model]( 
+        input_size=latent_size
     )
+    print(f'Build model: {args.model}')
     # Note that parameter initialization is done within the DiT constructor
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     requires_grad(ema, False)
-    model = DDP(model.to(device), device_ids=[rank])
-    diffusion = create_diffusion(timestep_respacing="")  # default: 1000 steps, linear noise schedule
+    model = DDP(model.to(device), device_ids=[rank]) # DataParrallel
+
+    diffusion = create_diffusion(str(num_sampling_steps))  # default: 1000 steps, linear noise schedule
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
-    opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
-
+    d_opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
     # Setup data:
     transform = transforms.Compose([
         transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)),
@@ -244,14 +221,16 @@ def main(args):
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
     ])
+    
     dataset = ImageFolder(args.data_path, transform=transform)
     sampler = DistributedSampler(
         dataset,
         num_replicas=dist.get_world_size(),
         rank=rank,
         shuffle=True,
-        seed=args.global_seed
+        seed=args.global_seed # 似乎应该是rank specific seed
     )
+    batch_size=int(args.global_batch_size // dist.get_world_size())
     loader = DataLoader(
         dataset,
         batch_size=int(args.global_batch_size // dist.get_world_size()),
@@ -271,41 +250,35 @@ def main(args):
     # Variables for monitoring/logging purposes:
     train_steps = 0
     log_steps = 0
-    running_loss = 0
+    d_running_loss = 0
     start_time = time()
 
-    logger.info(f"Training for {args.epochs} epochs...")
+    logger.info(f"Total epoch number: {args.epochs}.")
     for epoch in range(args.epochs):
+        model.train()
         sampler.set_epoch(epoch)
-        logger.info(f"Beginning epoch {epoch}...")
-
-        for x, y in loader:
-
+        logger.info(f"Begin epoch: {epoch}")
+        for x, _ in loader:
             x = x.to(device)
-            y = y.to(device)
 
+            # train diffusion model 
             with torch.no_grad():
                 # Map input images to latent space + normalize latents:
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
-
             t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
-            model_kwargs = dict(y=y)
+            model_kwargs = dict() #y=y
             loss_dict = diffusion.training_losses(model, x, t, model_kwargs)
-            loss = loss_dict["loss"].mean()
-            print(type(loss)) #need to test out to make sure this step remains loss as a tensor
-
-            '''
-            #g_loss = alpha * loss + (1 - alpha) * math.abs(1 - discriminator(pred_patch))
-            L1 Generator loss formula. remained to be viewed
-            '''
+            dm_loss = loss_dict["loss"].mean()
             
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
+            d_loss = dm_loss
+            d_opt.zero_grad()
+            d_loss.backward()
+            d_opt.step()
             update_ema(ema, model.module)
 
             # Log loss values:
-            running_loss += loss.item()
+            d_running_loss += d_loss.item()
+
             log_steps += 1
             train_steps += 1
             if train_steps % args.log_every == 0:
@@ -314,39 +287,50 @@ def main(args):
                 end_time = time()
                 steps_per_sec = log_steps / (end_time - start_time)
                 # Reduce loss history over all processes:
-                avg_loss = torch.tensor(running_loss / log_steps, device=device)
-                dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
-                avg_loss = avg_loss.item() / dist.get_world_size()
-                logger.info(f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+                d_avg_loss = torch.tensor(d_running_loss / log_steps, device=device)
+                dist.all_reduce(d_avg_loss, op=dist.ReduceOp.SUM)
+                d_avg_loss = d_avg_loss.item() / dist.get_world_size()
+
+                logger.info(f"(step={train_steps:07d}) D_Train Loss: {d_avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+
                 # Reset monitoring variables:
-                running_loss = 0
+                d_running_loss = 0
+
                 log_steps = 0
                 start_time = time()
 
-            #if train_steps = 1000 we calculate FID & IS, and generate images
-            if train_steps % 1000 == 0:
-                model.eval()
-                with torch.no_grad():
-                    samples = generate_samples(model, num_samples = 20)
-                    fid_score = fid.compute_fid(fdir1, fdir2) #fdir1 would be generated images, fdir2 would be the dataset, need to be filled in.
-                    is_score = inception_score(samples)
-                    save_image(samples, f'{checkpoint_dir}/samples_{train_steps:07d}.png', nrow=5, normalize=True)
-                model.train()
-                logger.info(f"Step {train_steps}, FID: {fid_score}, IS: {is_score}")
+        # Save DiT checkpoint:
+        if epoch % args.ckpt_every == 0 and epoch > 0:
+            torch.cuda.synchronize() # ?: 有什么特殊作用
+            if rank == 0:
+                checkpoint = {
+                    "model": model.module.state_dict(),
+                    "ema": ema.state_dict(),
+                    "d_opt": d_opt.state_dict(),
+                    "args": args
+                }
 
-            # Save DiT checkpoint:
-            if train_steps % args.ckpt_every == 0 and train_steps > 0:
-                if rank == 0:
-                    checkpoint = {
-                        "model": model.module.state_dict(),
-                        "ema": ema.state_dict(),
-                        "opt": opt.state_dict(),
-                        "args": args
-                    }
-                    checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}.pt"
-                    torch.save(checkpoint, checkpoint_path)
-                    logger.info(f"Saved checkpoint to {checkpoint_path}")
-                dist.barrier()
+                checkpoint_path_fin = os.path.join(checkpoint_dir, f'{epoch:07d}.pt')
+                torch.save(checkpoint, checkpoint_path_fin)
+                logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
+            dist.barrier()
+
+        if epoch % args.ckpt_every == 0 and epoch > 0:
+            torch.cuda.synchronize() # ?: 有什么特殊作用
+            model.eval()
+            with torch.no_grad():
+                generate_samples(ckpt_str = f'{epoch:07d}',
+                                 fid_dir = fid_samples_dir,
+                                 model=model, 
+                                 diffuser=diffusion, 
+                                 vae=vae, 
+                                 rank=rank, 
+                                 device=device, 
+                                 latent_size=latent_size,
+                                 num_samples=args.fid_samples, 
+                                 n=batch_size)
+                
+                logger.info(f"Saved {args.fid_samples} images for {epoch}th epoch")
 
     model.eval()  # important! This disables randomized embedding dropout
     # do any sampling/FID calculation/etc. with ema (or model) in eval mode ...
@@ -356,19 +340,20 @@ def main(args):
 
 
 if __name__ == "__main__":
-    # Default args here will train DiT-XL/2 with the hyperparameters we used in our paper (except training iters).
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-path", type=str, required=True)
     parser.add_argument("--results-dir", type=str, default="results")
-    parser.add_argument("--model", type=str, choices=list(DiT_un_models.keys()), default="DiT-un")
-    parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
-    parser.add_argument("--num-classes", type=int, default=1000)
-    parser.add_argument("--epochs", type=int, default=2000)
+    parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-B/4")
+    parser.add_argument("--image-size", type=int, choices=[256, 512], default=128)
+    parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--global-batch-size", type=int, default=256)
     parser.add_argument("--global-seed", type=int, default=0)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--log-every", type=int, default=100)
-    parser.add_argument("--ckpt-every", type=int, default=50_000)
+    parser.add_argument("--log_every", type=int, default=5)
+    parser.add_argument("--ckpt_every", type=int, default=20)
+    parser.add_argument("--tau", type=float, default=0.9)
+    parser.add_argument("--fid_samples", type=int, default=1000)
+    parser.add_argument("--example_samples", type=int, default=50)
     args = parser.parse_args()
     main(args)

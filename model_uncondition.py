@@ -120,3 +120,52 @@ class DiT_Uncondition(nn.Module):
         half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
         eps = torch.cat([half_eps, half_eps], dim=0)
         return torch.cat([eps, rest], dim=1)
+    
+
+#################################################################################
+#                                   DiT Configs                                  #
+#################################################################################
+
+def DiT_Uncondition_XL_2(**kwargs):
+    return DiT_Uncondition(depth=28, hidden_size=1152, patch_size=2, num_heads=16, **kwargs)
+
+def DiT_Uncondition_XL_4(**kwargs):
+    return DiT_Uncondition(depth=28, hidden_size=1152, patch_size=4, num_heads=16, **kwargs)
+
+def DiT_Uncondition_XL_8(**kwargs):
+    return DiT_Uncondition(depth=28, hidden_size=1152, patch_size=8, num_heads=16, **kwargs)
+
+def DiT_Uncondition_L_2(**kwargs):
+    return DiT_Uncondition(depth=24, hidden_size=1024, patch_size=2, num_heads=16, **kwargs)
+
+def DiT_Uncondition_L_4(**kwargs):
+    return DiT_Uncondition(depth=24, hidden_size=1024, patch_size=4, num_heads=16, **kwargs)
+
+def DiT_Uncondition_L_8(**kwargs):
+    return DiT_Uncondition(depth=24, hidden_size=1024, patch_size=8, num_heads=16, **kwargs)
+
+def DiT_Uncondition_B_2(**kwargs):
+    return DiT_Uncondition(depth=12, hidden_size=768, patch_size=2, num_heads=12, **kwargs)
+
+def DiT_Uncondition_B_4(**kwargs):
+    return DiT_Uncondition(depth=12, hidden_size=768, patch_size=4, num_heads=12, **kwargs)
+
+def DiT_Uncondition_B_8(**kwargs):
+    return DiT_Uncondition(depth=12, hidden_size=768, patch_size=8, num_heads=12, **kwargs)
+
+def DiT_Uncondition_S_2(**kwargs):
+    return DiT_Uncondition(depth=12, hidden_size=384, patch_size=2, num_heads=6, **kwargs)
+
+def DiT_Uncondition_S_4(**kwargs):
+    return DiT_Uncondition(depth=12, hidden_size=384, patch_size=4, num_heads=6, **kwargs)
+
+def DiT_Uncondition_S_8(**kwargs):
+    return DiT_Uncondition(depth=12, hidden_size=384, patch_size=8, num_heads=6, **kwargs)
+
+
+DiT_Uncondition_models = {
+    'DiT_Uncondition-XL/2': DiT_Uncondition_XL_2,  'DiT_Uncondition-XL/4': DiT_Uncondition_XL_4,  'DiT_Uncondition-XL/8': DiT_Uncondition_XL_8,
+    'DiT_Uncondition-L/2':  DiT_Uncondition_L_2,   'DiT_Uncondition-L/4':  DiT_Uncondition_L_4,   'DiT_Uncondition-L/8':  DiT_Uncondition_L_8,
+    'DiT_Uncondition-B/2':  DiT_Uncondition_B_2,   'DiT_Uncondition-B/4':  DiT_Uncondition_B_4,   'DiT_Uncondition-B/8':  DiT_Uncondition_B_8,
+    'DiT_Uncondition-S/2':  DiT_Uncondition_S_2,   'DiT_Uncondition-S/4':  DiT_Uncondition_S_4,   'DiT_Uncondition-S/8':  DiT_Uncondition_S_8,
+}
