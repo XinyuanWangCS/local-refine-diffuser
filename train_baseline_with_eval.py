@@ -301,7 +301,7 @@ def main(args):
                 start_time = time()
 
         # Save DiT checkpoint:
-        if epoch % args.ckpt_every == 0 and epoch > 0:
+        if epoch % args.ckpt_every == 0 or epoch == args.epochs -1:
             
             if rank == 0:
                 #torch.cuda.synchronize() # ?: 有什么特殊作用
