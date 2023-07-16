@@ -11,7 +11,7 @@ conda activate DiT
 Train baseline and sample images for fid, kid calculation:
 example: use DiT_Uncondition-B/4 backbone and lfw dataset
 ```bash
-torchrun --nnodes=1 --nproc_per_node=4 train_baseline_with_eval.py --model DiT_Uncondition-B/4 --data_path dataset/images/lfw --epochs 2000 --ckpt_every 200 --fid_samples 5000
+torchrun --nnodes=1 --nproc_per_node=4 train_baseline_with_eval.py --model DiT_Uncondition-S/4 --data_path dataset/images/lfw --epochs 2000 --ckpt_every 200 --fid_samples 5000
 ```
 
 Evaluate trained checkpoins:
