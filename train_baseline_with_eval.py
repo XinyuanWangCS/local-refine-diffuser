@@ -318,7 +318,7 @@ def main(args):
                 logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
             dist.barrier()
 
-        if epoch % args.ckpt_every == 0 and epoch > 0:
+        if epoch % args.ckpt_every == 0:
             torch.cuda.synchronize() # ?: 有什么特殊作用
             model.eval()
             with torch.no_grad():
