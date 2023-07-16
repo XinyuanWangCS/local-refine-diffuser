@@ -334,7 +334,7 @@ def main(args):
                                  latent_size=latent_size,
                                  num_samples=args.fid_samples, 
                                  n=batch_size)
-                
+            if rank == 0:    
                 logger.info(f"Saved {args.fid_samples} images for {epoch}th epoch")
 
     logger.info("Done!")
