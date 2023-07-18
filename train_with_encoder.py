@@ -7,6 +7,8 @@
 """
 A minimal training script for DiT using PyTorch DDP.
 """
+import math
+from tqdm import tqdm
 import torch
 import torch.nn as nn
 # the first flag below was False when we tested this script but True makes A100 training a lot faster:
@@ -31,8 +33,8 @@ import os
 from models import DiT_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
-
-from model_uncondition import DiT_Uncondition
+from transformers import CLIPVisionModel
+from model_uncondition import *
 
 #from datasets import load_dataset
 
@@ -106,6 +108,48 @@ def center_crop_arr(pil_image, image_size):
     crop_x = (arr.shape[1] - image_size) // 2
     return Image.fromarray(arr[crop_y: crop_y + image_size, crop_x: crop_x + image_size])
 
+#################################################################################
+#                          Sample images for FID                                #
+#################################################################################
+
+def generate_samples(ckpt_str, fid_dir, model, diffuser, vae, rank, device, latent_size=32, num_samples=1000, n=16):
+    # Create random noise for input
+    global_batch_size = n * dist.get_world_size()
+    
+    # To make things evenly-divisible, we'll sample a bit more than we need and then discard the extra samples:
+    total_samples = int(math.ceil(num_samples / global_batch_size) * global_batch_size)
+
+    assert total_samples % dist.get_world_size() == 0, "total_samples must be divisible by world_size"
+    samples_needed_this_gpu = int(total_samples // dist.get_world_size())
+    assert samples_needed_this_gpu % n == 0, "samples_needed_this_gpu must be divisible by the per-GPU batch size"
+    iterations = int(samples_needed_this_gpu // n)
+    if rank == 0:
+        print(f"Total number of images that will be sampled: {total_samples}")
+        print(f'sample needed :{samples_needed_this_gpu}, iterations: {iterations}')
+
+    ckpt_fid_samples_dir = os.path.join(fid_dir, ckpt_str)
+    os.makedirs(ckpt_fid_samples_dir, exist_ok=True)
+
+    total = 0
+    pbar = range(iterations)
+    pbar = tqdm(pbar) if rank == 0 else pbar
+    
+    for _ in pbar:
+        z = torch.randn((n, 4, latent_size, latent_size)).to(device)
+        samples = diffuser.p_sample_loop(
+            model.forward, z.shape, z, clip_denoised = False, device = device
+        )
+        
+        samples = vae.decode(samples / 0.18215).sample
+        samples = torch.clamp(127.5 * samples + 128.0, 0, 255).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
+
+        for i, img in enumerate(samples):
+            index = i * dist.get_world_size() + rank + total
+            if index >= num_samples:
+                return
+            Image.fromarray(img).save(f'{ckpt_fid_samples_dir}/{index:07d}.png')
+            
+        total += global_batch_size
 
 #################################################################################
 #                                  Training Loop                                #
@@ -126,15 +170,17 @@ def main(args):
     torch.manual_seed(seed)
     torch.cuda.set_device(device)
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
+    num_sampling_steps = args.num_sampling_steps
 
     # Setup an experiment folder:
     if rank == 0:
-        os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
         experiment_index = len(glob(f"{args.results_dir}/*"))
+        dataset_name = args.data_path.split('/')[-1]
         model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
-        experiment_dir = f"{args.results_dir}/{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
-        checkpoint_dir = f"{experiment_dir}/checkpoints"  # Stores saved model checkpoints
-        os.makedirs(checkpoint_dir, exist_ok=True)
+        experiment_dir = f"{args.results_dir}/{dataset_name}-{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
+        os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
+        os.makedirs(experiment_dir, exist_ok=True)
+
         logger = create_logger(experiment_dir)
         logger.info(f"Experiment directory created at {experiment_dir}")
     else:
@@ -143,10 +189,14 @@ def main(args):
     # Create model:
     assert args.image_size % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
     latent_size = args.image_size // 8
-    hidden_size = args.hidden_size
-    patch_size = args.patch_size
-    model = DiT_Uncondition(depth=12, hidden_size=hidden_size, patch_size=patch_size, num_heads=6,)
-    encoder = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").encoder.to(device)#Encoder()
+
+    model = DiT_Uncondition_models[args.model]( 
+        input_size=latent_size
+    )
+    print(f'Build model: {args.model}')
+
+    # CLIP Encoder
+    encoder = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
     for param in encoder.parameters():
         param.requires_grad = False
 
@@ -205,8 +255,15 @@ def main(args):
 
     tau = args.tau
 
+    if rank != 0:
+        experiment_index = len(glob(f"{args.results_dir}/*"))-1
+        dataset_name = args.data_path.split('/')[-1]
+        model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
+        experiment_dir = f"{args.results_dir}/encoder_loss-{dataset_name}-{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
+
     logger.info(f"Training for {args.epochs} epochs...")
     for epoch in range(args.epochs):
+        model.train()
         sampler.set_epoch(epoch)
         logger.info(f"Beginning epoch {epoch}...")
         for x, _ in loader:
@@ -280,10 +337,31 @@ def main(args):
                         "opt": opt.state_dict(),
                         "args": args
                     }
-                    checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}.pt"
-                    torch.save(checkpoint, checkpoint_path)
-                    logger.info(f"Saved checkpoint to {checkpoint_path}")
+                    checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
+                    os.makedirs(checkpoint_dir, exist_ok=True)
+                    checkpoint_path_fin = os.path.join(checkpoint_dir, f'{epoch:07d}.pt')
+                    torch.save(checkpoint, checkpoint_path_fin)
+                    logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
                 dist.barrier()
+
+            if epoch % args.ckpt_every == 0 or epoch == args.epochs -1:
+                torch.cuda.synchronize() # ?: 有什么特殊作用
+                model.eval()
+                with torch.no_grad():
+                    fid_samples_dir = os.path.join(experiment_dir, 'fid_samples')
+                    os.makedirs(fid_samples_dir, exist_ok=True)
+                    generate_samples(ckpt_str = f'{epoch:07d}',
+                                    fid_dir = fid_samples_dir,
+                                    model=model, 
+                                    diffuser=diffusion, 
+                                    vae=vae, 
+                                    rank=rank, 
+                                    device=device, 
+                                    latent_size=latent_size,
+                                    num_samples=args.fid_samples, 
+                                    n=batch_size)
+                if rank == 0:    
+                    logger.info(f"Saved {args.fid_samples} images for {epoch}th epoch")
 
     model.eval()  # important! This disables randomized embedding dropout
     # do any sampling/FID calculation/etc. with ema (or model) in eval mode ...
