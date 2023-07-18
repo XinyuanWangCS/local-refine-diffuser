@@ -304,7 +304,6 @@ def main(args):
         if epoch % args.ckpt_every == 0 or epoch == args.epochs -1:
             
             if rank == 0:
-                #torch.cuda.synchronize() # ?: 有什么特殊作用
                 checkpoint = {
                     "model": model.module.state_dict(),
                     "ema": ema.state_dict(),
@@ -346,8 +345,8 @@ if __name__ == "__main__":
     parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--results-dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-B/4")
-    parser.add_argument("--image-size", type=int, choices=[256, 512], default=128)
-    parser.add_argument("--epochs", type=int, default=1000)
+    parser.add_argument("--image-size", type=int, choices=[128, 224, 256, 512], default=224)
+    parser.add_argument("--epochs", type=int, default=1200)
     parser.add_argument("--global-batch-size", type=int, default=256)
     parser.add_argument("--global-seed", type=int, default=0)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
