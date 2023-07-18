@@ -282,6 +282,7 @@ def main(args):
 
             log_steps += 1
             train_steps += 1
+            
             if train_steps % args.log_every == 0:
                 # Measure training speed:
                 torch.cuda.synchronize()
