@@ -30,11 +30,11 @@ import argparse
 import logging
 import os
 
-from models import DiT_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
-from transformers import CLIPVisionModel
 from model_uncondition import *
+
+from transformers import CLIPVisionModel
 
 #from datasets import load_dataset
 
@@ -199,14 +199,14 @@ def main(args):
     encoder = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
     for param in encoder.parameters():
         param.requires_grad = False
-
+    encoder = encoder.to(device)
+    
     # Note that parameter initialization is done within the DiT constructor
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     requires_grad(ema, False)
     model = DDP(model.to(device), device_ids=[rank]) # DataParrallel
-    #encoder = DDP(encoder.to(device), device_ids=[rank])
-    encoder = encoder.to(device)
-    diffusion = create_diffusion(timestep_respacing="")  # default: 1000 steps, linear noise schedule
+    
+    diffusion = create_diffusion(str(num_sampling_steps))  # default: 1000 steps, linear noise schedule
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
@@ -374,19 +374,20 @@ def main(args):
 if __name__ == "__main__":
     # Default args here will train DiT-XL/2 with the hyperparameters we used in our paper (except training iters).
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-path", type=str, required=True)
+    parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--results-dir", type=str, default="results")
-    parser.add_argument("--model", type=str, choices=list(DiT_models.keys()), default="DiT-XL/2")
-    parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--global-batch-size", type=int, default=16)
+    parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-B/4")
+    parser.add_argument("--image-size", type=int, choices=[128, 224, 256, 512], default=224)
+    parser.add_argument("--epochs", type=int, default=1200)
+    parser.add_argument("--global-batch-size", type=int, default=256)
     parser.add_argument("--global-seed", type=int, default=0)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--log-every", type=int, default=10)
-    parser.add_argument("--ckpt-every", type=int, default=50_00)
+    parser.add_argument("--log_every", type=int, default=5)
+    parser.add_argument("--ckpt_every", type=int, default=20)
     parser.add_argument("--tau", type=float, default=0.9)
-    parser.add_argument("--hidden_size", type=int, default=384)
-    parser.add_argument("--patch_size", type=int, default=4)
+    parser.add_argument("--fid_samples", type=int, default=1000)
+    parser.add_argument("--example_samples", type=int, default=50)
+    parser.add_argument("--num_sampling_steps", type=int, default=250)
     args = parser.parse_args()
     main(args)
