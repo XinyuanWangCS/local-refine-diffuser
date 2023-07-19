@@ -229,6 +229,7 @@ def main(args):
         shuffle=True,
         seed=args.global_seed # 似乎应该是rank specific seed
     )
+    batch_size=int(args.global_batch_size // dist.get_world_size())
     loader = DataLoader(
         dataset,
         batch_size=int(args.global_batch_size // dist.get_world_size()),
