@@ -200,7 +200,7 @@ def main(args):
     for param in encoder.parameters():
         param.requires_grad = False
     encoder = encoder.to(device)
-    
+
     # Note that parameter initialization is done within the DiT constructor
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     requires_grad(ema, False)
@@ -283,8 +283,8 @@ def main(args):
             pred_It = vae.decode(pred_xt / 0.18215).sample
             gt_It = vae.decode(gt_xt / 0.18215).sample
 
-            embed_pred_It = encoder(pred_It)
-            embed_gt_It = encoder(gt_It)
+            embed_pred_It = encoder(pred_It)['last_hidden_state']
+            embed_gt_It = encoder(gt_It)['last_hidden_state']
 
             percept_loss = ((embed_pred_It - embed_gt_It)**2).mean()
 
@@ -329,43 +329,40 @@ def main(args):
                 log_steps = 0
                 start_time = time()
 
-            # Save DiT checkpoint:
-            if train_steps % args.ckpt_every == 0 and train_steps > 0:
-                if rank == 0:
-                    checkpoint = {
-                        "model": model.module.state_dict(),
-                        "ema": ema.state_dict(),
-                        "opt": opt.state_dict(),
-                        "args": args
-                    }
-                    checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
-                    os.makedirs(checkpoint_dir, exist_ok=True)
-                    checkpoint_path_fin = os.path.join(checkpoint_dir, f'{epoch:07d}.pt')
-                    torch.save(checkpoint, checkpoint_path_fin)
-                    logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
-                dist.barrier()
+        # Save DiT checkpoint:
+        if epoch % args.ckpt_every == 0 or epoch == args.epochs -1:
+            if rank == 0:
+                checkpoint = {
+                    "model": model.module.state_dict(),
+                    "ema": ema.state_dict(),
+                    "opt": opt.state_dict(),
+                    "args": args
+                }
+                checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
+                os.makedirs(checkpoint_dir, exist_ok=True)
+                checkpoint_path_fin = os.path.join(checkpoint_dir, f'{epoch:07d}.pt')
+                torch.save(checkpoint, checkpoint_path_fin)
+                logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
+            dist.barrier()
 
-            if epoch % args.ckpt_every == 0 or epoch == args.epochs -1:
-                torch.cuda.synchronize() # ?: 有什么特殊作用
-                model.eval()
-                with torch.no_grad():
-                    fid_samples_dir = os.path.join(experiment_dir, 'fid_samples')
-                    os.makedirs(fid_samples_dir, exist_ok=True)
-                    generate_samples(ckpt_str = f'{epoch:07d}',
-                                    fid_dir = fid_samples_dir,
-                                    model=model, 
-                                    diffuser=diffusion, 
-                                    vae=vae, 
-                                    rank=rank, 
-                                    device=device, 
-                                    latent_size=latent_size,
-                                    num_samples=args.fid_samples, 
-                                    n=batch_size)
-                if rank == 0:    
-                    logger.info(f"Saved {args.fid_samples} images for {epoch}th epoch")
-
-    model.eval()  # important! This disables randomized embedding dropout
-    # do any sampling/FID calculation/etc. with ema (or model) in eval mode ...
+        '''if epoch % args.ckpt_every == 0 or epoch == args.epochs -1:
+            torch.cuda.synchronize() # ?: 有什么特殊作用
+            model.eval()
+            with torch.no_grad():
+                fid_samples_dir = os.path.join(experiment_dir, 'fid_samples')
+                os.makedirs(fid_samples_dir, exist_ok=True)
+                generate_samples(ckpt_str = f'{epoch:07d}',
+                                fid_dir = fid_samples_dir,
+                                model=model, 
+                                diffuser=diffusion, 
+                                vae=vae, 
+                                rank=rank, 
+                                device=device, 
+                                latent_size=latent_size,
+                                num_samples=args.fid_samples, 
+                                n=batch_size)
+            if rank == 0:    
+                logger.info(f"Saved {args.fid_samples} images for {epoch}th epoch")'''
 
     logger.info("Done!")
     cleanup()
@@ -385,7 +382,7 @@ if __name__ == "__main__":
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log_every", type=int, default=5)
     parser.add_argument("--ckpt_every", type=int, default=20)
-    parser.add_argument("--tau", type=float, default=0.9)
+    parser.add_argument("--tau", type=float, default=0.8)
     parser.add_argument("--fid_samples", type=int, default=1000)
     parser.add_argument("--example_samples", type=int, default=50)
     parser.add_argument("--num_sampling_steps", type=int, default=250)
