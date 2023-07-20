@@ -335,6 +335,6 @@ if __name__ == "__main__":
     parser.add_argument("--fid_samples", type=int, default=1000)
     parser.add_argument("--example_samples", type=int, default=50)
     parser.add_argument("--num_sampling_steps", type=int, default=250)
-    parser.add_argument("--encoder", type=str, default='clip')
+    parser.add_argument("--encoder", type=str, default='resnet50')
     args = parser.parse_args()
     main(args)
