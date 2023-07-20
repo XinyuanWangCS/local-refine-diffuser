@@ -34,15 +34,15 @@ from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 from model_uncondition import *
 
-from transformers import CLIPVisionModel
-
+#from transformers import CLIPVisionModel
+from transformers import ResNetForImageClassification
 #from datasets import load_dataset
 
 #################################################################################
 #                             Training Helper Functions                         #
 #################################################################################
 
-@torch.no_grad()
+'''@torch.no_grad()
 def update_ema(ema_model, model, decay=0.9999):
     """
     Step the EMA model towards the current model.
@@ -53,7 +53,7 @@ def update_ema(ema_model, model, decay=0.9999):
     for name, param in model_params.items():
         # TODO: Consider applying only to params that require_grad to avoid small numerical changes of pos_embed
         ema_params[name].mul_(decay).add_(param.data, alpha=1 - decay) # add_用于权重缩减, ema_params = decay * ema_params + (1-decay) * parram
-        # param.data绕过自动微分，不会计算param的梯度 => param.detach()
+        # param.data绕过自动微分，不会计算param的梯度 => param.detach()'''
 
 def requires_grad(model, flag=True):
     """
@@ -109,49 +109,6 @@ def center_crop_arr(pil_image, image_size):
     return Image.fromarray(arr[crop_y: crop_y + image_size, crop_x: crop_x + image_size])
 
 #################################################################################
-#                          Sample images for FID                                #
-#################################################################################
-
-def generate_samples(ckpt_str, fid_dir, model, diffuser, vae, rank, device, latent_size=32, num_samples=1000, n=16):
-    # Create random noise for input
-    global_batch_size = n * dist.get_world_size()
-    
-    # To make things evenly-divisible, we'll sample a bit more than we need and then discard the extra samples:
-    total_samples = int(math.ceil(num_samples / global_batch_size) * global_batch_size)
-
-    assert total_samples % dist.get_world_size() == 0, "total_samples must be divisible by world_size"
-    samples_needed_this_gpu = int(total_samples // dist.get_world_size())
-    assert samples_needed_this_gpu % n == 0, "samples_needed_this_gpu must be divisible by the per-GPU batch size"
-    iterations = int(samples_needed_this_gpu // n)
-    if rank == 0:
-        print(f"Total number of images that will be sampled: {total_samples}")
-        print(f'sample needed :{samples_needed_this_gpu}, iterations: {iterations}')
-
-    ckpt_fid_samples_dir = os.path.join(fid_dir, ckpt_str)
-    os.makedirs(ckpt_fid_samples_dir, exist_ok=True)
-
-    total = 0
-    pbar = range(iterations)
-    pbar = tqdm(pbar) if rank == 0 else pbar
-    
-    for _ in pbar:
-        z = torch.randn((n, 4, latent_size, latent_size)).to(device)
-        samples = diffuser.p_sample_loop(
-            model.forward, z.shape, z, clip_denoised = False, device = device
-        )
-        
-        samples = vae.decode(samples / 0.18215).sample
-        samples = torch.clamp(127.5 * samples + 128.0, 0, 255).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
-
-        for i, img in enumerate(samples):
-            index = i * dist.get_world_size() + rank + total
-            if index >= num_samples:
-                return
-            Image.fromarray(img).save(f'{ckpt_fid_samples_dir}/{index:07d}.png')
-            
-        total += global_batch_size
-
-#################################################################################
 #                                  Training Loop                                #
 #################################################################################
 
@@ -205,15 +162,16 @@ def main(args):
     )
     print(f'Build model: {args.model}')
 
-    # CLIP Encoder
-    encoder = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
+    # Encoder
+    encoder = ResNetForImageClassification.from_pretrained("microsoft/resnet-50").to('cuda:3')
+    encoder = torch.nn.Sequential(*list(model.children())[:-1])
     for param in encoder.parameters():
         param.requires_grad = False
     encoder = encoder.to(device)
 
     # Note that parameter initialization is done within the DiT constructor
-    ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
-    requires_grad(ema, False)
+    #ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
+    #requires_grad(ema, False)
     model = DDP(model.to(device), device_ids=[rank]) # DataParrallel
     
     diffusion = create_diffusion(str(num_sampling_steps))  # default: 1000 steps, linear noise schedule
@@ -239,7 +197,7 @@ def main(args):
         shuffle=True,
         seed=args.global_seed # 似乎应该是rank specific seed
     )
-    batch_size=int(args.global_batch_size // dist.get_world_size())
+    
     loader = DataLoader(
         dataset,
         batch_size=int(args.global_batch_size // dist.get_world_size()),
@@ -252,9 +210,9 @@ def main(args):
     logger.info(f"Dataset contains {len(dataset):,} images ({args.data_path})")
 
     # Prepare models for training:
-    update_ema(ema, model.module, decay=0)  # Ensure EMA is initialized with synced weights
+    #update_ema(ema, model.module, decay=0)  # Ensure EMA is initialized with synced weights
     model.train()  # important! This enables embedding dropout for classifier-free guidance
-    ema.eval()  # EMA model should always be in eval mode
+    #ema.eval()  # EMA model should always be in eval mode
 
     # Variables for monitoring/logging purposes:
     train_steps = 0
@@ -302,7 +260,7 @@ def main(args):
             opt.zero_grad()
             loss.backward()
             opt.step()
-            update_ema(ema, model.module)
+            #update_ema(ema, model.module)
 
             # Log loss values:
             running_loss += loss.item()
@@ -344,7 +302,7 @@ def main(args):
             if rank == 0:
                 checkpoint = {
                     "model": model.module.state_dict(),
-                    "ema": ema.state_dict(),
+                    #"ema": ema.state_dict(),
                     "opt": opt.state_dict(),
                     "args": args
                 }
@@ -354,25 +312,6 @@ def main(args):
                 torch.save(checkpoint, checkpoint_path_fin)
                 logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
             dist.barrier()
-
-        '''if epoch % args.ckpt_every == 0 or epoch == args.epochs -1:
-            torch.cuda.synchronize() # ?: 有什么特殊作用
-            model.eval()
-            with torch.no_grad():
-                fid_samples_dir = os.path.join(experiment_dir, 'fid_samples')
-                os.makedirs(fid_samples_dir, exist_ok=True)
-                generate_samples(ckpt_str = f'{epoch:07d}',
-                                fid_dir = fid_samples_dir,
-                                model=model, 
-                                diffuser=diffusion, 
-                                vae=vae, 
-                                rank=rank, 
-                                device=device, 
-                                latent_size=latent_size,
-                                num_samples=args.fid_samples, 
-                                n=batch_size)
-            if rank == 0:    
-                logger.info(f"Saved {args.fid_samples} images for {epoch}th epoch")'''
 
     logger.info("Done!")
     cleanup()
