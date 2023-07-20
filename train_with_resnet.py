@@ -163,12 +163,12 @@ def main(args):
     print(f'Build model: {args.model}')
 
     # Encoder
-    encoder = ResNetForImageClassification.from_pretrained("microsoft/resnet-50").to('cuda:3')
-    encoder = torch.nn.Sequential(*list(model.children())[:-1])
+    encoder = ResNetForImageClassification.from_pretrained("microsoft/resnet-50")
+    encoder = torch.nn.Sequential(*list(encoder.children())[:-1])
     for param in encoder.parameters():
         param.requires_grad = False
     encoder = encoder.to(device)
-
+    print(encoder)
     # Note that parameter initialization is done within the DiT constructor
     #ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     #requires_grad(ema, False)
@@ -250,7 +250,7 @@ def main(args):
 
             pred_It = vae.decode(pred_xt / 0.18215).sample
             gt_It = vae.decode(gt_xt / 0.18215).sample
-
+            
             embed_pred_It = encoder(pred_It)['last_hidden_state']
             embed_gt_It = encoder(gt_It)['last_hidden_state']
 
