@@ -849,7 +849,7 @@ class GaussianDiffusion:
                     x_start=x_start, x_t=x_t, t=t
                 )[0],
                 ModelMeanType.START_X: x_start,
-                ModelMeanType.EPSILON: noise,
+                ModelMeanType.EPSILON: noise, # default choice
             }[self.model_mean_type]
             assert model_output.shape == target.shape == x_start.shape
             terms["mse"] = mean_flat((target - model_output) ** 2)
