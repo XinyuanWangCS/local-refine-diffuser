@@ -24,7 +24,7 @@ torchrun --nnodes=1 --nproc_per_node=2 train_with_encoder.py --model DiT_Uncondi
 
 Train DiT with ResNet50 encoder perceptual loss:
 ```bash
-!torchrun --nnodes=1 --nproc_per_node=1 train_with_resnet.py --model DiT_Uncondition-S/4 --data_path dataset/images/lfw_funneled --epochs 2 --ckpt_every 1 --image-size 224 --global-batch-size 4
+!torchrun --nnodes=1 --nproc_per_node=4 train_with_resnet.py --model DiT_Uncondition-S/4 --data_path dataset/images/lfw_funneled --epochs 200 --ckpt_every 10 --image-size 224 --global-batch-size 24
 ```
 
 Evaluate trained checkpoins:
