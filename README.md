@@ -11,20 +11,20 @@ conda activate DiT
 Train baseline and sample images for fid, kid calculation:
 example: use DiT_Uncondition-B/4 backbone and lfw dataset
 ```bash
-torchrun --nnodes=1 --nproc_per_node=4 train_baseline_dit.py --model DiT_Uncondition-S/4 --data_path dataset/images/lfw --epochs 1500 --ckpt_every 100 --image-size 224 --global-batch-size 256
+torchrun --nnodes=1 --nproc_per_node=4 train_baseline_dit.py --model DiT_Uncondition-S/4 --data_path dataset/images/lfw --epochs 2000 --ckpt_every 100 --image-size 256 --global-batch-size 256
 ```
 ```bash
-torchrun --nnodes=1 --nproc_per_node=3 train_baseline_dit.py --model DiT_Uncondition-S/4 --data_path dataset/images/wiki --epochs 1000 --ckpt_every 100 --image-size 224 --global-batch-size 384
+torchrun --nnodes=1 --nproc_per_node=3 train_baseline_dit.py --model DiT_Uncondition-S/4 --data_path dataset/images/wiki --epochs 1000 --ckpt_every 100 --image-size 256 --global-batch-size 384
 ```
 
 Train DiT with CLIP encoder perceptual loss:
 ```bash
-torchrun --nnodes=1 --nproc_per_node=2 train_with_encoder.py --model DiT_Uncondition-S/4 --data_path dataset/images/lfw_funneled --epochs 100 --ckpt_every 10 --image-size 224 --global-batch-size 12
+torchrun --nnodes=1 --nproc_per_node=2 train_with_encoder.py --model DiT_Uncondition-S/4 --data_path dataset/images/lfw_funneled --epochs 100 --ckpt_every 10 --image-size 256 --global-batch-size 12
 ```
 
 Train DiT with ResNet50 encoder perceptual loss:
 ```bash
-!torchrun --nnodes=1 --nproc_per_node=4 train_with_resnet.py --model DiT_Uncondition-S/4 --data_path dataset/images/lfw_funneled --epochs 200 --ckpt_every 10 --image-size 224 --global-batch-size 24
+!torchrun --nnodes=1 --nproc_per_node=4 train_with_resnet.py --model DiT_Uncondition-S/4 --data_path dataset/images/lfw_funneled --epochs 200 --ckpt_every 10 --image-size 256 --global-batch-size 24
 ```
 
 Evaluate trained checkpoins:
