@@ -8,25 +8,19 @@
 A minimal training script for DiT using PyTorch DDP.
 """
 import torch
-import math
 # the first flag below was False when we tested this script but True makes A100 training a lot faster:
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch import nn
 import torch.nn.functional as func
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torchvision.datasets import ImageFolder
-from torchvision.utils import save_image  # for saving generated samples
-from torchvision.models import inception_v3
-from torchvision.transforms import functional as F
 from torchvision import transforms
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 import numpy as np
-from scipy.linalg import sqrtm
 from tqdm import tqdm
 from collections import OrderedDict
 from PIL import Image
@@ -179,7 +173,7 @@ def main(args):
         shuffle=True,
         seed=args.global_seed # 似乎应该是rank specific seed
     )
-    batch_size=int(args.global_batch_size // dist.get_world_size())
+    
     loader = DataLoader(
         dataset,
         batch_size=int(args.global_batch_size // dist.get_world_size()),
@@ -281,7 +275,7 @@ if __name__ == "__main__":
     parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--results-dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-B/4")
-    parser.add_argument("--image-size", type=int, choices=[128, 224, 256, 512], default=224)
+    parser.add_argument("--image-size", type=int, choices=[128, 224, 256, 512], default=256)
     parser.add_argument("--epochs", type=int, default=1200)
     parser.add_argument("--global-batch-size", type=int, default=256)
     parser.add_argument("--global-seed", type=int, default=0)
