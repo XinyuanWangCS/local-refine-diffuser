@@ -3,7 +3,7 @@ dataset/
 results/
 diffusion/__pycache__/
 run_DiT.ipynb
-experiment/
+experiment/*
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

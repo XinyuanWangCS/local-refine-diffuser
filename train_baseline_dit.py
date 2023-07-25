@@ -284,6 +284,6 @@ if __name__ == "__main__":
     parser.add_argument("--log_every", type=int, default=5)
     parser.add_argument("--ckpt_every", type=int, default=20)
     parser.add_argument("--tau", type=float, default=0.9)
-    parser.add_argument("--num_sampling_steps", type=int, default=250)
+    parser.add_argument("--num_sampling_steps", type=int, default=1000)
     args = parser.parse_args()
     main(args)
