@@ -25,7 +25,6 @@ from torchvision.transforms import functional as F
 from torchvision import transforms
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
-from cleanfid import fid
 import numpy as np
 from scipy.linalg import sqrtm
 from tqdm import tqdm
@@ -108,51 +107,6 @@ def center_crop_arr(pil_image, image_size):
     crop_y = (arr.shape[0] - image_size) // 2
     crop_x = (arr.shape[1] - image_size) // 2
     return Image.fromarray(arr[crop_y: crop_y + image_size, crop_x: crop_x + image_size])
-
-#################################################################################
-#                          Sample images for FID                                #
-#################################################################################
-
-def generate_samples(ckpt_str, fid_dir, model, diffuser, vae, rank, device, latent_size=32, num_samples=1000, n=16):
-    # Create random noise for input
-    global_batch_size = n * dist.get_world_size()
-    
-    # To make things evenly-divisible, we'll sample a bit more than we need and then discard the extra samples:
-    total_samples = int(math.ceil(num_samples / global_batch_size) * global_batch_size)
-    
-        
-
-    assert total_samples % dist.get_world_size() == 0, "total_samples must be divisible by world_size"
-    samples_needed_this_gpu = int(total_samples // dist.get_world_size())
-    assert samples_needed_this_gpu % n == 0, "samples_needed_this_gpu must be divisible by the per-GPU batch size"
-    iterations = int(samples_needed_this_gpu // n)
-    if rank == 0:
-        print(f"Total number of images that will be sampled: {total_samples}")
-        print(f'sample needed :{samples_needed_this_gpu}, iterations: {iterations}')
-
-    ckpt_fid_samples_dir = os.path.join(fid_dir, ckpt_str)
-    os.makedirs(ckpt_fid_samples_dir, exist_ok=True)
-
-    total = 0
-    pbar = range(iterations)
-    pbar = tqdm(pbar) if rank == 0 else pbar
-    
-    for _ in pbar:
-        z = torch.randn((n, 4, latent_size, latent_size)).to(device)
-        samples = diffuser.p_sample_loop(
-            model.forward, z.shape, z, clip_denoised = False, device = device
-        )
-        
-        samples = vae.decode(samples / 0.18215).sample
-        samples = torch.clamp(127.5 * samples + 128.0, 0, 255).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
-
-        for i, img in enumerate(samples):
-            index = i * dist.get_world_size() + rank + total
-            if index >= num_samples:
-                return
-            Image.fromarray(img).save(f'{ckpt_fid_samples_dir}/{index:07d}.png')
-            
-        total += global_batch_size
 
 
 #################################################################################
@@ -318,25 +272,6 @@ def main(args):
                 logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
             dist.barrier()
 
-        if epoch % args.ckpt_every == 0 or epoch == args.epochs -1:
-            torch.cuda.synchronize() # ?: 有什么特殊作用
-            model.eval()
-            with torch.no_grad():
-                fid_samples_dir = os.path.join(experiment_dir, 'fid_samples')
-                os.makedirs(fid_samples_dir, exist_ok=True)
-                generate_samples(ckpt_str = f'{epoch:07d}',
-                                 fid_dir = fid_samples_dir,
-                                 model=model, 
-                                 diffuser=diffusion, 
-                                 vae=vae, 
-                                 rank=rank, 
-                                 device=device, 
-                                 latent_size=latent_size,
-                                 num_samples=args.fid_samples, 
-                                 n=batch_size)
-            if rank == 0:    
-                logger.info(f"Saved {args.fid_samples} images for {epoch}th epoch")
-
     logger.info("Done!")
     cleanup()
 
@@ -355,8 +290,6 @@ if __name__ == "__main__":
     parser.add_argument("--log_every", type=int, default=5)
     parser.add_argument("--ckpt_every", type=int, default=20)
     parser.add_argument("--tau", type=float, default=0.9)
-    parser.add_argument("--fid_samples", type=int, default=1000)
-    parser.add_argument("--example_samples", type=int, default=50)
     parser.add_argument("--num_sampling_steps", type=int, default=250)
     args = parser.parse_args()
     main(args)
