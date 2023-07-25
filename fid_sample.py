@@ -16,24 +16,13 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch import nn
 import torch.nn.functional as func
-from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
-from torchvision.datasets import ImageFolder
-from torchvision.utils import save_image  # for saving generated samples
-from torchvision.models import inception_v3
 from torchvision.transforms import functional as F
-from torchvision import transforms
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
-from cleanfid import fid
 import numpy as np
-from scipy.linalg import sqrtm
 from tqdm import tqdm
 from collections import OrderedDict
 from PIL import Image
-from copy import deepcopy
-from glob import glob
-from time import time
 import argparse
 import logging
 import os
