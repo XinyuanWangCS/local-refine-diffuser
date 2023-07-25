@@ -123,13 +123,13 @@ def main(args):
     torch.cuda.set_device(device)
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
     num_sampling_steps = args.num_sampling_steps
-
+    exp_name = args.experiment_name
     # Setup an experiment folder:
     if rank == 0:
-        experiment_index = len(glob(f"{args.results_dir}/*"))
         dataset_name = args.data_path.split('/')[-1]
+        experiment_index = len(glob(f"{args.results_dir}/{exp_name}*"))
         model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
-        experiment_dir = f"{args.results_dir}/{dataset_name}-{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
+        experiment_dir = f"{args.results_dir}/{exp_name}-{experiment_index:03d}-{dataset_name}--{model_string_name}"  # Create an experiment folder
         os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
         os.makedirs(experiment_dir, exist_ok=True)
 
@@ -197,10 +197,10 @@ def main(args):
     start_time = time()
 
     if rank != 0:
-        experiment_index = len(glob(f"{args.results_dir}/*"))-1
+        experiment_index = len(glob(f"{args.results_dir}/{exp_name}*"))
         dataset_name = args.data_path.split('/')[-1]
         model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
-        experiment_dir = f"{args.results_dir}/{dataset_name}-{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
+        experiment_dir = f"{args.results_dir}/{exp_name}-{experiment_index:03d}-{dataset_name}--{model_string_name}"  # Create an experiment folder
 
     logger.info(f"Total epoch number: {args.epochs}.")
     for epoch in range(args.epochs):
@@ -272,6 +272,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--experiment_name", type=str, default="baseline")
     parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--results-dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-B/4")
@@ -285,5 +286,7 @@ if __name__ == "__main__":
     parser.add_argument("--ckpt_every", type=int, default=20)
     parser.add_argument("--tau", type=float, default=0.9)
     parser.add_argument("--num_sampling_steps", type=int, default=1000)
+    parser.add_argument("--continue_training", type=bool, default=False)
+    parser.add_argument("--continue_ckpt_dir", type=str, default='')
     args = parser.parse_args()
     main(args)
