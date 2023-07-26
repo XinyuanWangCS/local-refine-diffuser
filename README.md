@@ -9,9 +9,9 @@ conda activate DiT
 ```
 
 Train baseline and sample images for fid, kid calculation:
-example: use DiT_Uncondition-B/4 backbone and lfw dataset
+example: use DiT_Uncondition-B/4 backbone and lfw_funneled dataset
 ```bash
-torchrun --nnodes=1 --nproc_per_node=4 train_baseline_dit.py --model DiT_Uncondition-S/4 --data_path dataset/images/lfw --epochs 2000 --ckpt_every 100 --image-size 256 --global-batch-size 256
+torchrun --nnodes=1 --nproc_per_node=3 train_baseline_dit.py --model DiT_Uncondition-S/4 --data_path dataset/images/lfw_funneled --epochs 2000 --ckpt_every 100 --image-size 256 --global-batch-size 276
 ```
 ```bash
 torchrun --nnodes=1 --nproc_per_node=3 train_baseline_dit.py --model DiT_Uncondition-S/4 --data_path dataset/images/wiki --epochs 1000 --ckpt_every 100 --image-size 256 --global-batch-size 384
