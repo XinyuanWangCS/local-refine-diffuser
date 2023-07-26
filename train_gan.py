@@ -111,9 +111,27 @@ def center_crop_arr(pil_image, image_size):
     return Image.fromarray(arr[crop_y: crop_y + image_size, crop_x: crop_x + image_size])
 
 
+
 #################################################################################
 #                                  Discriminator                                #
 #################################################################################
+
+class SelfAttention(nn.Module):
+    def __init__(self, input_dim):
+        super(SelfAttention, self).__init__()
+        self.query = nn.Linear(input_dim, input_dim)
+        self.key = nn.Linear(input_dim, input_dim)
+        self.value = nn.Linear(input_dim, input_dim)
+
+    def forward(self, input):
+        q = self.query(input)
+        k = self.key(input)
+        v = self.value(input)
+
+        attn_weights = nn.functional.softmax(q @ k.transpose(-2, -1), dim=-1)
+        output = attn_weights @ v
+
+        return output
 
 class Discriminator(nn.Module):
     def __init__(self, num_channels, height, width):
@@ -122,11 +140,29 @@ class Discriminator(nn.Module):
         self.num_channels = num_channels
         self.height = height
         self.width = width
+        self.features = self.num_channels * self.height * self.width
 
+        self.self_attn1 = SelfAttention(4096)
+        self.self_attn2 = SelfAttention(2048)
+        self.self_attn3 = SelfAttention(1024)
+        self.self_attn4 = SelfAttention(512)
+        self.self_attn5 = SelfAttention(256)
+        
         self.model = nn.Sequential(
-            nn.Linear(self.num_channels * self.height * self.width, 512),
+            nn.Linear(self.num_channels * self.height * self.width, 4096),
+            self.self_attn1, 
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(4096, 2048),
+            self.self_attn2,  
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(2048, 1024),
+            self.self_attn3, 
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(1024, 512),
+            self.self_attn4, 
             nn.LeakyReLU(0.2, inplace=True),
             nn.Linear(512, 256),
+            self.self_attn5, 
             nn.LeakyReLU(0.2, inplace=True),
             nn.Linear(256, 1),
             nn.Sigmoid(),
@@ -296,12 +332,10 @@ def main(args):
             pred_xt, gt_xt = loss_dict["pred_xt"], loss_dict["gt_xt"]
             dm_loss = loss_dict["loss"].mean()
 
-            pred_It = vae.decode(pred_xt / 0.18215).sample
-            gt_It = vae.decode(gt_xt / 0.18215).sample
-            
-            preds = discriminator(pred_It)
+            preds = discriminator(pred_xt)
             g_adv_loss = BCELoss(preds, gt)
 
+            # 0.8 tau (0.2 for g_adv_loss)
             loss = tau * dm_loss + (1-tau) * g_adv_loss
             opt_g.zero_grad()
             loss.backward()
@@ -315,11 +349,11 @@ def main(args):
             
 
             # -----------------
-            #  train diffusion model 
+            #  train discriminator model 
             # -----------------
 
             real_loss = BCELoss(discriminator(real_imgs), gt)
-            fake_loss = BCELoss(discriminator(pred_It.detach()), fake)
+            fake_loss = BCELoss(discriminator(pred_xt.detach()), fake)
 
             discriminator_loss = (real_loss + fake_loss) / 2
             
