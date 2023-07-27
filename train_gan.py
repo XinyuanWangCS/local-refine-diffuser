@@ -116,7 +116,7 @@ def center_crop_arr(pil_image, image_size):
 #                                  Discriminator                                #
 #################################################################################
 
-class SelfAttention(nn.Module):
+#class SelfAttention(nn.Module):
     def __init__(self, input_dim):
         super(SelfAttention, self).__init__()
         self.query = nn.Linear(input_dim, input_dim)
@@ -134,44 +134,39 @@ class SelfAttention(nn.Module):
         return output
 
 class Discriminator(nn.Module):
-    def __init__(self, num_channels, height, width):
+    def __init__(self):
         super(Discriminator, self).__init__()
 
-        self.num_channels = num_channels
-        self.height = height
-        self.width = width
-        self.features = self.num_channels * self.height * self.width
+        self.features = 4 * 32 * 32
 
-        self.self_attn1 = SelfAttention(4096)
-        self.self_attn2 = SelfAttention(2048)
-        self.self_attn3 = SelfAttention(1024)
-        self.self_attn4 = SelfAttention(512)
-        self.self_attn5 = SelfAttention(256)
-        
         self.model = nn.Sequential(
-            nn.Linear(self.num_channels * self.height * self.width, 4096),
-            self.self_attn1, 
+            nn.Linear(self.features, 4096),
+            nn.GroupNorm(1, 4096),
             nn.LeakyReLU(0.2, inplace=True),
+            
             nn.Linear(4096, 2048),
-            self.self_attn2,  
+            nn.GroupNorm(1, 2048),
             nn.LeakyReLU(0.2, inplace=True),
+            
             nn.Linear(2048, 1024),
-            self.self_attn3, 
+            nn.GroupNorm(1, 1024),
             nn.LeakyReLU(0.2, inplace=True),
+            
             nn.Linear(1024, 512),
-            self.self_attn4, 
+            nn.GroupNorm(1, 512),
             nn.LeakyReLU(0.2, inplace=True),
+            
             nn.Linear(512, 256),
-            self.self_attn5, 
+            nn.GroupNorm(1, 256),
             nn.LeakyReLU(0.2, inplace=True),
+            
             nn.Linear(256, 1),
             nn.Sigmoid(),
         )
 
     def forward(self, img):
-        img_flat = img.view(img.size(0), -1)
+        img_flat = img.view(img.size(0), -1) 
         validity = self.model(img_flat)
-
         return validity
 
 #################################################################################
@@ -234,7 +229,7 @@ def main(args):
     #ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     #requires_grad(ema, False)
     model = DDP(model.to(device), device_ids=[rank]) # DataParrallel
-    discriminator = Discriminator(3, args.image_size, args.image_size)
+    discriminator = Discriminator().to(device)
     
     diffusion = create_diffusion(str(num_sampling_steps))  # default: 1000 steps, linear noise schedule
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
@@ -287,16 +282,8 @@ def main(args):
     dis_running_loss = 0 # sum loss
     start_time = time()
 
-    cuda = True if torch.cuda.is_available() else False
-
-    #需要修改 这部分不太确定怎么做parallel
-    if cuda:
-        generator.cuda()
-        discriminator.cuda()
-        adversarial_loss.cuda()
 
     tau = args.tau
-    Tensor = torch.cuda.FloatTensor if cuda else torch.FloatTensor
 
     if rank != 0:
         experiment_index = len(glob(f"{args.results_dir}/*"))-1
@@ -312,12 +299,13 @@ def main(args):
         for x, _ in loader:
             x = x.to(device)
 
-            gt = torch.ones(x.size(0), requires_grad = False)
-            fake = torch.zeros(x.size(0), requires_grad = False)
+            #print(f'x shape: {x.shape}')
 
-            real_imgs = x.type(Tensor)
+            gt = torch.ones((x.size(0), 1), requires_grad = False).to(device)
+            fake = torch.zeros((x.size(0), 1), requires_grad = False).to(device)
 
-            print(x)
+
+            #print(x)
 
             # -----------------
             #  train diffusion model 
@@ -332,8 +320,14 @@ def main(args):
             pred_xt, gt_xt = loss_dict["pred_xt"], loss_dict["gt_xt"]
             dm_loss = loss_dict["loss"].mean()
 
+            #print(f'pred_xt shape: {pred_xt.shape}')
+
             preds = discriminator(pred_xt)
+            #print(f'preds shape: {preds.shape}')
             g_adv_loss = BCELoss(preds, gt)
+
+            #print(f'diffusion loss: {dm_loss}')
+            #print(f'adversarial loss: {g_adv_loss}')
 
             # 0.8 tau (0.2 for g_adv_loss)
             loss = tau * dm_loss + (1-tau) * g_adv_loss
@@ -352,7 +346,7 @@ def main(args):
             #  train discriminator model 
             # -----------------
 
-            real_loss = BCELoss(discriminator(real_imgs), gt)
+            real_loss = BCELoss(discriminator(gt_xt), gt)
             fake_loss = BCELoss(discriminator(pred_xt.detach()), fake)
 
             discriminator_loss = (real_loss + fake_loss) / 2
@@ -376,20 +370,25 @@ def main(args):
                 dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
                 avg_loss = avg_loss.item() / dist.get_world_size()
 
-                d_avg_loss = torch.tensor(d_running_loss / log_steps, device=device)
-                dist.all_reduce(d_avg_loss, op=dist.ReduceOp.SUM)
-                d_avg_loss = d_avg_loss.item() / dist.get_world_size()
+                gen_avg_loss = torch.tensor(gen_running_loss / log_steps, device=device)
+                dist.all_reduce(gen_avg_loss, op=dist.ReduceOp.SUM)
+                gen_avg_loss = gen_avg_loss.item() / dist.get_world_size()
 
-                p_avg_loss = torch.tensor(p_running_loss / log_steps, device=device)
-                dist.all_reduce(p_avg_loss, op=dist.ReduceOp.SUM)
-                p_avg_loss = p_avg_loss.item() / dist.get_world_size()
+                g_adv_avg_loss = torch.tensor(g_adv_running_loss / log_steps, device=device)
+                dist.all_reduce(g_adv_avg_loss, op=dist.ReduceOp.SUM)
+                g_adv_avg_loss = g_adv_avg_loss.item() / dist.get_world_size()
 
-                logger.info(f"(step={train_steps:07d}) Loss: {avg_loss:.4f} D_Loss: {d_avg_loss:.4f}, P_Loss: {p_avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+                dis_avg_loss = torch.tensor(dis_running_loss / log_steps, device=device)
+                dist.all_reduce(dis_avg_loss, op=dist.ReduceOp.SUM)
+                dis_avg_loss = dis_avg_loss.item() / dist.get_world_size()
+
+                logger.info(f"(step={train_steps:07d}) Loss: {avg_loss:.4f} Generator_Loss: {gen_avg_loss:.4f}, Generator_Adversarial_Loss: {g_adv_avg_loss:.4f}, Discriminator Loss: {dis_avg_loss: .4f} Train Steps/Sec: {steps_per_sec:.2f}")
 
                 # Reset monitoring variables:
                 running_loss = 0
-                d_running_loss = 0
-                p_running_loss = 0
+                gen_running_loss = 0
+                g_adv_running_loss = 0
+                dis_running_loss = 0
 
                 log_steps = 0
                 start_time = time()
@@ -397,17 +396,30 @@ def main(args):
         # Save DiT checkpoint:
         if epoch % args.ckpt_every == 0 or epoch == args.epochs -1:
             if rank == 0:
-                checkpoint = {
-                    "model": model.module.state_dict(),
-                    #"ema": ema.state_dict(),
-                    "opt": opt.state_dict(),
-                    "args": args
-                }
                 checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
                 os.makedirs(checkpoint_dir, exist_ok=True)
-                checkpoint_path_fin = os.path.join(checkpoint_dir, f'{epoch:07d}.pt')
-                torch.save(checkpoint, checkpoint_path_fin)
-                logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
+                
+                # Save DiT model
+                checkpoint_dit = {
+                    "model": model.module.state_dict(),
+                    #"ema": ema.state_dict(),
+                    "opt_g": opt_g.state_dict(),
+                    "args": args
+                }
+                checkpoint_path_fin = os.path.join(checkpoint_dir, f'{epoch:07d}_dit.pt')
+                torch.save(checkpoint_dit, checkpoint_path_fin)
+                logger.info(f"Saved DiT checkpoint to {checkpoint_path_fin}")
+                
+                # Save discriminator model
+                checkpoint_discriminator = {
+                    "model": discriminator.state_dict(),
+                    "opt_d": opt_d.state_dict(),
+                    "args": args
+                }
+                checkpoint_path_fin = os.path.join(checkpoint_dir, f'{epoch:07d}_discriminator.pt')
+                torch.save(checkpoint_discriminator, checkpoint_path_fin)
+                logger.info(f"Saved discriminator checkpoint to {checkpoint_path_fin}")
+
             dist.barrier()
 
     logger.info("Done!")
