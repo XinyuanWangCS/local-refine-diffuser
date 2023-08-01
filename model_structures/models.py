@@ -238,13 +238,18 @@ class DiT(nn.Module):
         y: (N,) tensor of class labels
         """
         x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
+        print(f'x: {x.shape}')
         t = self.t_embedder(t)                   # (N, D)
         y = self.y_embedder(y, self.training)    # (N, D)
-        c = t + y                                # (N, D)
+        c = t + y 
+        print(f'c: {c.shape}')                               # (N, D)
         for block in self.blocks:
-            x = block(x, c)                      # (N, T, D)
-        x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
-        x = self.unpatchify(x)                   # (N, out_channels, H, W)
+            x = block(x, c)   
+            print(f'x: {x.shape}')                   # (N, T, D)
+        x = self.final_layer(x, c)
+        print(f'x: {x.shape}')                # (N, T, patch_size ** 2 * out_channels)
+        x = self.unpatchify(x)
+        print(f'x: {x.shape}')                   # (N, out_channels, H, W)
         return x
 
     def forward_with_cfg(self, x, t, y, cfg_scale):

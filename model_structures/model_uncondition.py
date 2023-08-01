@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 import math
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
-from models import *
+from .models import *
 
 class DiT_Uncondition(nn.Module):
     """
