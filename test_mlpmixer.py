@@ -96,7 +96,7 @@ for epoch in range(100):  # loop over the dataset multiple times
         if i % log_step == 0 and i != 0:    # print every 2000 mini-batches
             logger.info(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss / log_step:.3f}')
             running_loss = 0.0
-        
+    print(f'Epoch: {epoch}')
     eval(net, testloader, trainloader=trainloader, device=device, logger=logger)
 
 print('Finished Training')
