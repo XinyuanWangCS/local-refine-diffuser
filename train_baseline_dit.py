@@ -31,7 +31,7 @@ import argparse
 import logging
 import os
 
-from model_uncondition import DiT_Uncondition_models
+from model_structures.model_uncondition import DiT_Uncondition_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 
@@ -132,6 +132,7 @@ def main(args):
         train_steps = checkpoint["train_steps"]
         logger = create_logger(experiment_dir)
         logger.info(f"Experiment directory created at {experiment_dir}")
+        
     else:
         print(f'Build model: {args.model}')
 
@@ -149,14 +150,17 @@ def main(args):
     if not args.resume:
         if rank == 0:
             dataset_name = args.data_path.split('/')[-1]
-            experiment_index = len(glob(f"{args.results_dir}/{exp_name}*"))
+            experiment_index = len(glob(f"{args.results_dir}/{exp_name}-{dataset_name}*"))
             model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
-            experiment_dir = f"{args.results_dir}/{exp_name}-{experiment_index:03d}-{dataset_name}--{model_string_name}"  # Create an experiment folder
+            experiment_dir = f"{args.results_dir}/{exp_name}-{dataset_name}-{experiment_index:03d}--{model_string_name}"  # Create an experiment folder
             os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
             os.makedirs(experiment_dir, exist_ok=True)
 
             logger = create_logger(experiment_dir)
             logger.info(f"Experiment directory created at {experiment_dir}")
+            logger.info("Arguments:")
+            for k, v in vars(args).items():
+                logger.info(f'{k}: {v}')
         else:
             logger = create_logger(None)
 

@@ -32,7 +32,7 @@ from models import DiT_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 
-from model_uncondition import DiT_Uncondition
+from model_structures.model_uncondition import DiT_Uncondition
 
 #from datasets import load_dataset
 

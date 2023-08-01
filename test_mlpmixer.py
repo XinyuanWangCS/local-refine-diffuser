@@ -4,6 +4,9 @@ import torch
 import torchvision
 import torchvision.transforms as transforms
 import logging
+import pytz
+import os
+from datetime import datetime
 
 def create_logger(logging_dir):
     """
@@ -13,7 +16,7 @@ def create_logger(logging_dir):
         level=logging.INFO, # 记录级别为INFO
         format='[\033[34m%(asctime)s\033[0m] %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
-        handlers=[logging.StreamHandler(), logging.FileHandler(f"{logging_dir}/log.txt")]
+        handlers=[logging.StreamHandler(), logging.FileHandler(os.path.join(logging_dir, "log.txt"))]
     )
     logger = logging.getLogger(__name__)
     return logger
@@ -56,7 +59,7 @@ transform = transforms.Compose(
     [transforms.ToTensor(),
      transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
-batch_size = 192
+batch_size = 224
 trainset = torchvision.datasets.CIFAR10(root='./dataset', train=True,
                                         download=True, transform=transform)
 trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size,
@@ -67,13 +70,21 @@ testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size,
                                          shuffle=False, num_workers=2)
 
 
-net = MLPMixer(in_channels=3, image_size=32, patch_size=2, num_classes=10,
-                 dim=512, depth=8, token_dim=256, channel_dim=1024).to(device)
+model = MLPMixerClassifier(in_channels=3, image_size=32, patch_size=4, num_classes=10,
+                 dim=768, depth=12, token_dim=196, channel_dim=3072).to(device)
 
-logger = create_logger('./results')
+logging_dir = './results'
+now = datetime.now().astimezone(pytz.timezone('US/Pacific')).strftime("%Y%m%d-%H%M")
+os.makedirs(os.path.join(logging_dir, f"{now}-mlpmixer"))
+logging_dir = os.path.join(logging_dir, f"{now}-mlpmixer")
 
+logger = create_logger(logging_dir)
+logger.info('Arguments:')
+logger.info(dict(in_channels=3, image_size=32, patch_size=4, num_classes=10,
+                 dim=768, depth=12, token_dim=196, channel_dim=3072))
+logger.info(f'batch_size: {batch_size}')
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
 log_step = 50
 
 for epoch in range(100):  # loop over the dataset multiple times
@@ -86,7 +97,7 @@ for epoch in range(100):  # loop over the dataset multiple times
         optimizer.zero_grad()
 
         # forward + backward + optimize
-        outputs = net(inputs)
+        outputs = model(inputs)
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
@@ -97,6 +108,19 @@ for epoch in range(100):  # loop over the dataset multiple times
             logger.info(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss / log_step:.3f}')
             running_loss = 0.0
     print(f'Epoch: {epoch}')
-    eval(net, testloader, trainloader=trainloader, device=device, logger=logger)
+    eval(model, testloader, trainloader=trainloader, device=device, logger=logger)
+    if epoch % 1 == 0 and epoch != 0:
+        checkpoint = {
+                    "model": model.module.state_dict(),
+                    "epoch":epoch+1,
+                    #"args": args,
+                    "experiment_dir":logging_dir,
+                    #"train_steps": train_steps,
+                }
+        checkpoint_dir = os.path.join(logging_dir, 'checkpoints')
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        checkpoint_path_fin = os.path.join(checkpoint_dir, f'{epoch:07d}.pt')
+        torch.save(checkpoint, checkpoint_path_fin)
+        logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
 
 print('Finished Training')

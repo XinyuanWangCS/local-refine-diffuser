@@ -27,7 +27,7 @@ import argparse
 import logging
 import os
 
-from model_uncondition import DiT_Uncondition_models
+from model_structures.model_uncondition import DiT_Uncondition_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 

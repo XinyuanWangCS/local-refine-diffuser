@@ -3,7 +3,6 @@ import numpy as np
 from torch import nn
 from einops.layers.torch import Rearrange
 
-
 class FeedForward(nn.Module):
     def __init__(self, dim, hidden_dim, dropout = 0.):
         super().__init__()
@@ -18,7 +17,6 @@ class FeedForward(nn.Module):
         return self.net(x)
 
 class MixerBlock(nn.Module):
-
     def __init__(self, dim, num_patch, token_dim, channel_dim, dropout = 0.):
         super().__init__()
 
@@ -35,13 +33,9 @@ class MixerBlock(nn.Module):
         )
 
     def forward(self, x):
-
         x = x + self.token_mix(x)
-
         x = x + self.channel_mix(x)
-
         return x
-
 
 class MLPMixer(nn.Module):
 
@@ -67,36 +61,29 @@ class MLPMixer(nn.Module):
         )
 
     def forward(self, x):
-
-
         x = self.to_patch_embedding(x)
-
         for mixer_block in self.mixer_blocks:
             x = mixer_block(x)
 
         x = self.layer_norm(x)
+        return x
 
+class MLPMixerClassifier(nn.Module):
+    def __init__(self, in_channels, dim, num_classes, patch_size, image_size, depth, token_dim, channel_dim):
+        super().__init__()
+
+        assert image_size % patch_size == 0, 'Image dimensions must be divisible by the patch size.'
+        self.mlp_mixer = MLPMixer(in_channels, dim, num_classes, patch_size, image_size, depth, token_dim, channel_dim)
+
+        self.classifier = nn.Sequential(
+            nn.Linear(dim, num_classes)
+        )
+
+    def forward(self, x):
+        x = self.mlp_mixer(x)
         x = x.mean(dim=1)
-
-        return self.mlp_head(x)
-
-
-
-
-if __name__ == "__main__":
-    img = torch.ones([1, 3, 224, 224])
-
-    model = MLPMixer(in_channels=3, image_size=224, patch_size=16, num_classes=1000,
-                     dim=512, depth=8, token_dim=256, channel_dim=2048)
-
-    parameters = filter(lambda p: p.requires_grad, model.parameters())
-    parameters = sum([np.prod(p.size()) for p in parameters]) / 1_000_000
-    print('Trainable Parameters: %.3fM' % parameters)
-
-    out_img = model(img)
-
-    print("Shape of out :", out_img.shape)  # [B, in_channels, image_size, image_size]
-
+        x = self.classifier(x)
+        return x
 
 
 

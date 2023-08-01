@@ -32,7 +32,7 @@ import os
 
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
-from model_uncondition import *
+from model_structures.model_uncondition import *
 
 from transformers import CLIPVisionModel
 
