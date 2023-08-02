@@ -14,25 +14,44 @@ torch.backends.cudnn.allow_tf32 = True
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.nn.functional as func
-from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
-from torchvision import transforms
+
 from datasets import load_dataset
 
-import numpy as np
 from tqdm import tqdm
 from collections import OrderedDict
-from PIL import Image
 from copy import deepcopy
 from glob import glob
 from time import time
 import argparse
-import logging
+
 import os
 
 from model_structures.mlp_mixer import *
 from diffusers.models import AutoencoderKL
 
+import logging
+from utils import *
+
+def create_logger(logging_dir):
+    """
+    Create a logger that writes to a log file and stdout.
+    """
+    if dist.get_rank() == 0:  # real logger: only log when rang == 0
+        logging.basicConfig(
+            level=logging.INFO, 
+            format='[%(asctime)s] %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S',
+            handlers=[logging.StreamHandler(), logging.FileHandler(f"{logging_dir}/log.txt")]
+        )
+        logger = logging.getLogger(__name__)
+    else:  # dummy logger (does nothing)
+        logger = logging.getLogger(__name__)
+        logger.addHandler(logging.NullHandler())
+    return logger
+
+
+
+    
 #################################################################################
 #                             Training Helper Functions                         #
 #################################################################################
@@ -50,42 +69,6 @@ def cleanup():
     """
     dist.destroy_process_group()
 
-def create_logger(logging_dir):
-    """
-    Create a logger that writes to a log file and stdout.
-    """
-    if dist.get_rank() == 0:  # real logger: only log when rang == 0
-        logging.basicConfig(
-            level=logging.INFO, 
-            format='[\033[34m%(asctime)s\033[0m] %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S',
-            handlers=[logging.StreamHandler(), logging.FileHandler(f"{logging_dir}/log.txt")]
-        )
-        logger = logging.getLogger(__name__)
-    else:  # dummy logger (does nothing)
-        logger = logging.getLogger(__name__)
-        logger.addHandler(logging.NullHandler())
-    return logger
-
-def center_crop_arr(pil_image, image_size):
-    """
-    Center cropping implementation from ADM.
-    https://github.com/openai/guided-diffusion/blob/8fb3ad9197f16bbc40620447b2742e13458d2831/guided_diffusion/image_datasets.py#L126
-    """
-    while min(*pil_image.size) >= 2 * image_size:
-        pil_image = pil_image.resize(
-            tuple(x // 2 for x in pil_image.size), resample=Image.BOX
-        )
-
-    scale = image_size / min(*pil_image.size)
-    pil_image = pil_image.resize(
-        tuple(round(x * scale) for x in pil_image.size), resample=Image.BICUBIC
-    )
-
-    arr = np.array(pil_image)
-    crop_y = (arr.shape[0] - image_size) // 2
-    crop_x = (arr.shape[1] - image_size) // 2
-    return Image.fromarray(arr[crop_y: crop_y + image_size, crop_x: crop_x + image_size])
 
 
 #################################################################################
@@ -109,7 +92,8 @@ def main(args):
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
 
     # Create model:
-    model = MLPMixerClassifier(in_channels=3, image_size=32, patch_size=4, num_classes=10,
+    mlp_input_size = args.image_size // 8
+    model = MLPMixerClassifier(in_channels=3, image_size=mlp_input_size, patch_size=4, num_classes=1000,
                  dim=768, depth=12, token_dim=196, channel_dim=3072)
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     
@@ -135,10 +119,12 @@ def main(args):
 
     # DataParrallel
     model = DDP(model.to(device), device_ids=[rank]) 
+    
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
-    d_opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
+    criterion = nn.CrossEntropyLoss()
     if args.resume:
-         d_opt.load_state_dict(checkpoint["d_opt"])
+         optimizer.load_state_dict(checkpoint["optimizer"])
     
     # Setup an experiment folder:
     exp_name = args.experiment_name
@@ -160,74 +146,71 @@ def main(args):
             logger = create_logger(None)
 
     logger.info(f"{args.model} parameters: {sum(p.numel() for p in model.parameters()):,}")
+    
     # Setup data:
-    transform = transforms.Compose([
-        transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
-    ])
-    
-    # TODO: transform
-    dataset = load_dataset("imagenet-1k", cache_dir=args.data_path, transform=transform)
-    sampler = DistributedSampler(
-        dataset,
-        num_replicas=dist.get_world_size(),
-        rank=rank,
-        shuffle=True,
-        seed=args.global_seed 
-    )
-    
-    loader = DataLoader(
-        dataset,
-        batch_size=int(args.global_batch_size // dist.get_world_size()),
-        shuffle=False,
-        sampler=sampler,
-        num_workers=args.num_workers,
-        pin_memory=True,
-        drop_last=True
-    )
-    logger.info(f"Dataset contains {len(dataset):,} images ({args.data_path})")
+    dataset = load_dataset("imagenet-1k",cache_dir=args.data_path)
+    transform = get_transform(image_size=args.image_size)
+    train_dataset = ImageDataset(dataset['train'], transform)
+    #validation_dataset = ImageDataset(dataset['validation'], transform)
+    test_dataset = ImageDataset(dataset['test'], transform)
 
-    # Prepare models for training:
-    model.train()  # important! This enables embedding dropout for classifier-free guidance
-
-    # Variables for monitoring/logging purposes:
-    log_steps = 0
-    d_running_loss = 0
-    start_time = time()
+    batch_size=int(args.global_batch_size // dist.get_world_size())
+    train_sampler, train_loader = get_ddp_sampler_loader(dataset=train_dataset,
+                                num_replicas=dist.get_world_size(),
+                                rank=rank,
+                                sample_shuffle=True,
+                                seed=args.global_seed,
+                                batch_size=batch_size,
+                                num_workers=args.num_workers,
+                                pin_memory=True,
+                                drop_last=True)
+    test_sampler, test_loader = get_ddp_sampler_loader(dataset=test_dataset,
+                                num_replicas=dist.get_world_size(),
+                                rank=rank,
+                                sample_shuffle=False,
+                                seed=args.global_seed,
+                                batch_size=batch_size,
+                                num_workers=args.num_workers,
+                                pin_memory=True,
+                                drop_last=True)
+    
+    logger.info(f"Train Dataset contains {len(train_dataset):,} images")
+    #logger.info(f"Validation Dataset contains {len(validation_dataset):,} images")
+    logger.info(f"Test Dataset contains {len(test_dataset):,} images")
 
     if rank != 0 and not args.resume:
         experiment_index = len(glob(f"{args.results_dir}/{exp_name}*"))
         dataset_name = args.data_path.split('/')[-1]
-        model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
-        experiment_dir = f"{args.results_dir}/{exp_name}-{experiment_index:03d}-{dataset_name}--{model_string_name}"  # Create an experiment folder
+        model_string_name = args.model
+        experiment_dir = f"{args.results_dir}/{exp_name}-{dataset_name}-{experiment_index:03d}--{model_string_name}"
 
+    # Variables for monitoring/logging purposes:
+    log_steps = 0
+    running_loss = 0.0
+    start_time = time()
+    
     logger.info(f"Total epoch number: {args.epochs}.")
     for epoch in range(args.start_epoch, args.epochs):
         model.train()
-        sampler.set_epoch(epoch)
+        train_sampler.set_epoch(epoch)
         logger.info(f"Begin epoch: {epoch}")
-        for x, _ in loader:
-            x = x.to(device)
+        for x, y in train_loader:
+            x, y = x.to(device), y.to(device)
 
             # train diffusion model 
             with torch.no_grad():
                 # Map input images to latent space + normalize latents:
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
-            t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
-            model_kwargs = dict() #y=y
-            loss_dict = diffusion.training_losses(model, x, t, model_kwargs)
-            dm_loss = loss_dict["loss"].mean()
+                
+            x = model(x)
+            loss = criterion(x, y)
             
-            d_loss = dm_loss
-            d_opt.zero_grad()
-            d_loss.backward()
-            d_opt.step()
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
             # Log loss values:
-            d_running_loss += d_loss.item()
-
+            running_loss += loss.item()
             log_steps += 1
             train_steps += 1
             
@@ -237,24 +220,23 @@ def main(args):
                 end_time = time()
                 steps_per_sec = log_steps / (end_time - start_time)
                 # Reduce loss history over all processes:
-                d_avg_loss = torch.tensor(d_running_loss / log_steps, device=device)
-                dist.all_reduce(d_avg_loss, op=dist.ReduceOp.SUM)
-                d_avg_loss = d_avg_loss.item() / dist.get_world_size()
+                avg_loss = torch.tensor(running_loss / log_steps, device=device)
+                dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
+                avg_loss = avg_loss.item() / dist.get_world_size()
 
-                logger.info(f"(step={train_steps:07d}) D_Train Loss: {d_avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+                logger.info(f"(step={train_steps:08d}) D_Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
 
                 # Reset monitoring variables:
-                d_running_loss = 0
-
+                running_loss = 0
                 log_steps = 0
                 start_time = time()
 
         # Save DiT checkpoint:
-        if epoch % args.ckpt_every == 0 or epoch == args.epochs -1:
+        if (epoch % args.ckpt_every == 0 and epoch != 0) or epoch == args.epochs -1:
             if rank == 0:
                 checkpoint = {
                     "model": model.module.state_dict(),
-                    "d_opt": d_opt.state_dict(),
+                    "optimizer": optimizer.state_dict(),
                     "epoch":epoch+1,
                     "args": args,
                     "experiment_dir":experiment_dir,
@@ -274,20 +256,19 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, default="mlpmixer")
-    parser.add_argument("--experiment_name", type=str, default="imagenet_classifer")
-    parser.add_argument("--data_path", type=str, required=True)
+    parser.add_argument("--experiment-name", type=str, default="imagenet_classifer")
+    parser.add_argument("--data-path", type=str, required=True)
     parser.add_argument("--results-dir", type=str, default="results")
     
-    parser.add_argument("--image-size", type=int, choices=[128, 224, 256, 512], default=256)
-    parser.add_argument("--epochs", type=int, default=1200)
+    parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
+    parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--global-batch-size", type=int, default=256)
     parser.add_argument("--global-seed", type=int, default=0)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--log_every", type=int, default=5)
-    parser.add_argument("--ckpt_every", type=int, default=20)
-    parser.add_argument("--tau", type=float, default=0.9)
-    parser.add_argument("--num_sampling_steps", type=int, default=1000)
+    parser.add_argument("--log-every", type=int, default=5)
+    parser.add_argument("--ckpt-every", type=int, default=1)
+
     parser.add_argument(
         "--resume",
         default="",
