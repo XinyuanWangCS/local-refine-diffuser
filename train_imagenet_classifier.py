@@ -16,8 +16,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.nn.functional as func
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
-from torchvision.datasets import ImageFolder
 from torchvision import transforms
+from datasets import load_dataset
 
 import numpy as np
 from tqdm import tqdm
@@ -30,8 +30,7 @@ import argparse
 import logging
 import os
 
-from model_structures.model_uncondition import DiT_Uncondition_models
-from diffusion import create_diffusion
+from model_structures.mlp_mixer import *
 from diffusers.models import AutoencoderKL
 
 #################################################################################
@@ -55,9 +54,9 @@ def create_logger(logging_dir):
     """
     Create a logger that writes to a log file and stdout.
     """
-    if dist.get_rank() == 0:  # real logger: 只有排名为0的进程执行logging
+    if dist.get_rank() == 0:  # real logger: only log when rang == 0
         logging.basicConfig(
-            level=logging.INFO, # 记录级别为INFO
+            level=logging.INFO, 
             format='[\033[34m%(asctime)s\033[0m] %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S',
             handlers=[logging.StreamHandler(), logging.FileHandler(f"{logging_dir}/log.txt")]
@@ -95,7 +94,7 @@ def center_crop_arr(pil_image, image_size):
 
 def main(args):
     """
-    Trains a new DiT model.
+    Trains a ImageNet Classifier using MLPMixer.
     """
     assert torch.cuda.is_available(), "Training currently requires at least one GPU."
 
@@ -108,12 +107,11 @@ def main(args):
     torch.manual_seed(seed)
     torch.cuda.set_device(device)
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
-     # Create model:
-    assert args.image_size % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
-    latent_size = args.image_size // 8
-    model = DiT_Uncondition_models[args.model]( 
-        input_size=latent_size
-    )
+
+    # Create model:
+    model = MLPMixerClassifier(in_channels=3, image_size=32, patch_size=4, num_classes=10,
+                 dim=768, depth=12, token_dim=196, channel_dim=3072)
+    vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     
     train_steps = 0
     # Resume training: continue ckpt args.resume
@@ -141,8 +139,6 @@ def main(args):
     d_opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
     if args.resume:
          d_opt.load_state_dict(checkpoint["d_opt"])
-    diffusion = create_diffusion(str(args.num_sampling_steps))  # default: 1000 steps, linear noise schedule
-    vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     
     # Setup an experiment folder:
     exp_name = args.experiment_name
@@ -150,7 +146,7 @@ def main(args):
         if rank == 0:
             dataset_name = args.data_path.split('/')[-1]
             experiment_index = len(glob(f"{args.results_dir}/{exp_name}-{dataset_name}*"))
-            model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
+            model_string_name = args.model  
             experiment_dir = f"{args.results_dir}/{exp_name}-{dataset_name}-{experiment_index:03d}--{model_string_name}"  # Create an experiment folder
             os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
             os.makedirs(experiment_dir, exist_ok=True)
@@ -163,7 +159,7 @@ def main(args):
         else:
             logger = create_logger(None)
 
-    logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
+    logger.info(f"{args.model} parameters: {sum(p.numel() for p in model.parameters()):,}")
     # Setup data:
     transform = transforms.Compose([
         transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)),
@@ -172,13 +168,14 @@ def main(args):
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
     ])
     
-    dataset = ImageFolder(args.data_path, transform=transform)
+    # TODO: transform
+    dataset = load_dataset("imagenet-1k", cache_dir=args.data_path, transform=transform)
     sampler = DistributedSampler(
         dataset,
         num_replicas=dist.get_world_size(),
         rank=rank,
         shuffle=True,
-        seed=args.global_seed # 似乎应该是rank specific seed
+        seed=args.global_seed 
     )
     
     loader = DataLoader(
@@ -276,10 +273,11 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--experiment_name", type=str, default="baseline")
+    parser.add_argument("--model", type=str, default="mlpmixer")
+    parser.add_argument("--experiment_name", type=str, default="imagenet_classifer")
     parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--results-dir", type=str, default="results")
-    parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-B/4")
+    
     parser.add_argument("--image-size", type=int, choices=[128, 224, 256, 512], default=256)
     parser.add_argument("--epochs", type=int, default=1200)
     parser.add_argument("--global-batch-size", type=int, default=256)

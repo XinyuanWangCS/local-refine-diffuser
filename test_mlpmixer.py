@@ -59,7 +59,7 @@ transform = transforms.Compose(
     [transforms.ToTensor(),
      transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
-batch_size = 224
+batch_size = 64
 trainset = torchvision.datasets.CIFAR10(root='./dataset', train=True,
                                         download=True, transform=transform)
 trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size,
@@ -109,9 +109,9 @@ for epoch in range(100):  # loop over the dataset multiple times
             running_loss = 0.0
     print(f'Epoch: {epoch}')
     eval(model, testloader, trainloader=trainloader, device=device, logger=logger)
-    if epoch % 1 == 0 and epoch != 0:
+    if epoch % 10 == 0 and epoch != 0:
         checkpoint = {
-                    "model": model.module.state_dict(),
+                    "model": model.state_dict(),
                     "epoch":epoch+1,
                     #"args": args,
                     "experiment_dir":logging_dir,
