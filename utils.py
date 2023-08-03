@@ -29,13 +29,17 @@ class ImageDataset(Dataset):
     def __init__(self, dataset, transform=None):
         self.dataset = dataset
         self.transform = transform
-
+        
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
-        image, label = self.dataset[idx]['image'], self.dataset[idx]['label']
-        return self.transform(image), label
+        (image, label) = self.dataset[idx].values()
+        if image.mode == "L":
+            image = image.convert("RGB")
+        if self.transform is not None:
+            image = self.transform(image)
+        return image, label
     
 def get_transform(image_size=256):
     transform = transforms.Compose([
