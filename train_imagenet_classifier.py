@@ -143,7 +143,7 @@ def main(args):
     transform = get_transform(image_size=args.image_size)
     train_dataset = ImageDataset(dataset['train'], transform)
     #validation_dataset = ImageDataset(dataset['validation'], transform)
-    test_dataset = ImageDataset(dataset['test'], transform)
+    test_dataset = ImageDataset(dataset['validation'], transform)
 
     batch_size=int(args.global_batch_size // dist.get_world_size())
     train_sampler, train_loader = get_ddp_sampler_loader(dataset=train_dataset,
@@ -237,6 +237,7 @@ def main(args):
 
         # Save DiT checkpoint:
         if (epoch % args.ckpt_every == 0 and epoch != 0) or epoch == args.epochs -1:
+            
             if rank == 0:
                 checkpoint = {
                     "model": model.module.state_dict(),
@@ -258,27 +259,28 @@ def main(args):
         epoch_total = 0
         epoch_loss = 0
         
-        if (epoch % args.test_every_epoch == 0) or epoch == args.epochs -1:
+        if rank == 0 and ((epoch % args.test_every_epoch == 0) or epoch == args.epochs -1):
+            torch.cuda.synchronize()
+            model.eval()
             test_correct = 0
             test_total = 0
             test_loss = 0
             with torch.no_grad():
-                for x, y in test_loader:
+                for x, y in tqdm(test_loader):
                     x, y = x.to(device), y.to(device)
-                    # train diffusion model 
-                    with torch.no_grad():
-                        # Map input images to latent space + normalize latents:
-                        x = vae.encode(x).latent_dist.sample().mul_(0.18215)
+                    x = vae.encode(x).latent_dist.sample().mul_(0.18215)
                         
                     x = model(x)
                     loss = criterion(x, y)
                     
                     _, pred = torch.max(x.data, -1)
                     test_total += y.size(0)
+                    
                     test_correct += (pred == y).sum().item()
                     test_loss += loss.item()
             logger.info(f'Testing epoch {epoch}')
             logger.info(f"Epoch: {epoch}  Test Accuracy: {(test_correct/test_total):.4f} Test Loss: {(test_loss/test_total):.4f}")
+            
     logger.info("Done!")
     cleanup()
 
