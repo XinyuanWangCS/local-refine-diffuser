@@ -17,8 +17,6 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.nn.functional as func
 
-from collections import OrderedDict
-from copy import deepcopy
 from glob import glob
 from time import time
 import argparse
@@ -107,7 +105,8 @@ def main(args):
         logger.info(f"Experiment directory created at {experiment_dir}")
         
     else:
-        print(f'Build model: {args.model}')
+        if rank == 0:
+            print(f'Build model: {args.model}')
 
     # DataParrallel
     model = DDP(model.to(device), device_ids=[rank]) 
@@ -180,6 +179,11 @@ def main(args):
     log_steps = 0
     running_loss = 0.0
     start_time = time()
+    correct = 0
+    total = 0
+    epoch_correct = 0
+    epoch_total = 0
+    epoch_loss = 0.0
     
     logger.info(f"Total epoch number: {args.epochs}.")
     for epoch in range(args.start_epoch, args.epochs):
@@ -188,7 +192,6 @@ def main(args):
         logger.info(f"Begin epoch: {epoch}")
         for x, y in train_loader:
             x, y = x.to(device), y.to(device)
-
             # train diffusion model 
             with torch.no_grad():
                 # Map input images to latent space + normalize latents:
@@ -196,6 +199,11 @@ def main(args):
                 
             x = model(x)
             loss = criterion(x, y)
+            epoch_loss += loss.item()
+            _, pred = torch.max(x.data, -1)
+            total += y.size(0)
+            epoch_total += y.size(0)
+            correct += (pred == y).sum().item()
             
             optimizer.zero_grad()
             loss.backward()
@@ -216,9 +224,13 @@ def main(args):
                 dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
                 avg_loss = avg_loss.item() / dist.get_world_size()
 
-                logger.info(f"(step={train_steps:08d}) D_Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+                logger.info(f"(step={train_steps:08d}) Loss: {avg_loss:.4f}, Running acc: {(correct/total):.3f}, Epoch acc: {(epoch_correct/epoch_total):.3f},  Train Steps/Sec: {steps_per_sec:.2f}")
 
                 # Reset monitoring variables:
+                epoch_total += total
+                epoch_correct += correct
+                correct = 0
+                total = 0
                 running_loss = 0
                 log_steps = 0
                 start_time = time()
@@ -236,11 +248,37 @@ def main(args):
                 }
                 checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
                 os.makedirs(checkpoint_dir, exist_ok=True)
-                checkpoint_path_fin = os.path.join(checkpoint_dir, f'{epoch:07d}.pt')
+                checkpoint_path_fin = os.path.join(checkpoint_dir, f'{epoch:08d}.pt')
                 torch.save(checkpoint, checkpoint_path_fin)
                 logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
             dist.barrier()
-
+        
+        logger.info(f"Epoch: {epoch} Accuracy: {(epoch_correct/epoch_total):.4f} Epoch Loss: {(epoch_loss/epoch_total):.4f}")
+        epoch_correct = 0
+        epoch_total = 0
+        epoch_loss = 0
+        
+        if (epoch % args.test_every_epoch == 0) or epoch == args.epochs -1:
+            test_correct = 0
+            test_total = 0
+            test_loss = 0
+            with torch.no_grad():
+                for x, y in test_loader:
+                    x, y = x.to(device), y.to(device)
+                    # train diffusion model 
+                    with torch.no_grad():
+                        # Map input images to latent space + normalize latents:
+                        x = vae.encode(x).latent_dist.sample().mul_(0.18215)
+                        
+                    x = model(x)
+                    loss = criterion(x, y)
+                    
+                    _, pred = torch.max(x.data, -1)
+                    test_total += y.size(0)
+                    test_correct += (pred == y).sum().item()
+                    test_loss += loss.item()
+            logger.info(f'Testing epoch {epoch}')
+            logger.info(f"Epoch: {epoch}  Test Accuracy: {(test_correct/test_total):.4f} Test Loss: {(test_loss/test_total):.4f}")
     logger.info("Done!")
     cleanup()
 
@@ -258,9 +296,9 @@ if __name__ == "__main__":
     parser.add_argument("--global-seed", type=int, default=0)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--log-every", type=int, default=5)
+    parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--ckpt-every", type=int, default=1)
-
+    parser.add_argument("--test-every-epoch", type=int, default=1)    
     parser.add_argument(
         "--resume",
         default="",
