@@ -93,7 +93,7 @@ def main(args):
 
     # Create model:
     mlp_input_size = args.image_size // 8
-    model = MLPMixerClassifier(in_channels=3, image_size=mlp_input_size, patch_size=4, num_classes=1000,
+    model = MLPMixerClassifier(in_channels=4, image_size=mlp_input_size, patch_size=4, num_classes=1000,
                  dim=768, depth=12, token_dim=196, channel_dim=3072)
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     
