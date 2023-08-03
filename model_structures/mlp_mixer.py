@@ -39,7 +39,7 @@ class MixerBlock(nn.Module):
 
 class MLPMixer(nn.Module):
 
-    def __init__(self, in_channels, dim, num_classes, patch_size, image_size, depth, token_dim, channel_dim):
+    def __init__(self, in_channels, dim, patch_size, image_size, depth, token_dim, channel_dim):
         super().__init__()
 
         assert image_size % patch_size == 0, 'Image dimensions must be divisible by the patch size.'
@@ -56,10 +56,6 @@ class MLPMixer(nn.Module):
 
         self.layer_norm = nn.LayerNorm(dim)
 
-        self.mlp_head = nn.Sequential(
-            nn.Linear(dim, num_classes)
-        )
-
     def forward(self, x):
         x = self.to_patch_embedding(x)
         for mixer_block in self.mixer_blocks:
@@ -73,7 +69,7 @@ class MLPMixerClassifier(nn.Module):
         super().__init__()
 
         assert image_size % patch_size == 0, 'Image dimensions must be divisible by the patch size.'
-        self.mlp_mixer = MLPMixer(in_channels, dim, num_classes, patch_size, image_size, depth, token_dim, channel_dim)
+        self.mlp_mixer = MLPMixer(in_channels, dim, patch_size, image_size, depth, token_dim, channel_dim)
 
         self.classifier = nn.Sequential(
             nn.Linear(dim, num_classes)

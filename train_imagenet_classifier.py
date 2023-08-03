@@ -7,7 +7,9 @@
 """
 A minimal training script for DiT using PyTorch DDP.
 """
+import os
 import torch
+from tqdm import tqdm
 # the first flag below was False when we tested this script but True makes A100 training a lot faster:
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -15,19 +17,15 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.nn.functional as func
 
-from datasets import load_dataset
-
-from tqdm import tqdm
 from collections import OrderedDict
 from copy import deepcopy
 from glob import glob
 from time import time
 import argparse
 
-import os
-
 from model_structures.mlp_mixer import *
 from diffusers.models import AutoencoderKL
+from datasets import load_dataset
 
 import logging
 from utils import *
@@ -48,14 +46,10 @@ def create_logger(logging_dir):
         logger = logging.getLogger(__name__)
         logger.addHandler(logging.NullHandler())
     return logger
-
-
-
     
 #################################################################################
 #                             Training Helper Functions                         #
 #################################################################################
-
 def requires_grad(model, flag=True):
     """
     Set requires_grad flag for all parameters in a model.
@@ -68,8 +62,6 @@ def cleanup():
     End DDP training.
     """
     dist.destroy_process_group()
-
-
 
 #################################################################################
 #                                  Training Loop                                #

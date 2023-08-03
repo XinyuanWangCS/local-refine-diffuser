@@ -35,7 +35,7 @@ class ImageDataset(Dataset):
 
     def __getitem__(self, idx):
         (image, label) = self.dataset[idx].values()
-        if image.mode == "L":
+        if image.mode != "RGB":
             image = image.convert("RGB")
         if self.transform is not None:
             image = self.transform(image)
