@@ -83,8 +83,9 @@ def main(args):
 
     # Create model:
     mlp_input_size = args.image_size // 8
+    #model = MLPMixerClassifier(in_channels=4, image_size=mlp_input_size, patch_size=4, num_classes=1000, dim=768, depth=12, token_dim=196, channel_dim=3072)
     model = MLPMixerClassifier(in_channels=4, image_size=mlp_input_size, patch_size=4, num_classes=1000,
-                 dim=768, depth=12, token_dim=196, channel_dim=3072)
+                 dim=768, depth=12, token_dim=196, channel_dim=1024)
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     
     train_steps = 0
@@ -155,19 +156,20 @@ def main(args):
                                 num_workers=args.num_workers,
                                 pin_memory=True,
                                 drop_last=True)
-    test_sampler, test_loader = get_ddp_sampler_loader(dataset=test_dataset,
-                                num_replicas=dist.get_world_size(),
-                                rank=rank,
-                                sample_shuffle=False,
-                                seed=args.global_seed,
-                                batch_size=batch_size,
-                                num_workers=args.num_workers,
-                                pin_memory=True,
-                                drop_last=True)
-    
-    logger.info(f"Train Dataset contains {len(train_dataset):,} images")
-    #logger.info(f"Validation Dataset contains {len(validation_dataset):,} images")
-    logger.info(f"Test Dataset contains {len(test_dataset):,} images")
+    if rank == 0:
+        test_sampler, test_loader = get_ddp_sampler_loader(dataset=test_dataset, # 可能改成无DDP
+                                    num_replicas=1,
+                                    rank=rank,
+                                    sample_shuffle=False,
+                                    seed=args.global_seed,
+                                    batch_size=batch_size,
+                                    num_workers=args.num_workers,
+                                    pin_memory=True,
+                                    drop_last=True)
+        
+        logger.info(f"Train Dataset contains {len(train_dataset):,} images")
+        #logger.info(f"Validation Dataset contains {len(validation_dataset):,} images")
+        logger.info(f"Test Dataset contains {len(test_dataset):,} images")
 
     if rank != 0 and not args.resume:
         experiment_index = len(glob(f"{args.results_dir}/{exp_name}*"))
@@ -192,7 +194,6 @@ def main(args):
         logger.info(f"Begin epoch: {epoch}")
         for x, y in train_loader:
             x, y = x.to(device), y.to(device)
-            # train diffusion model 
             with torch.no_grad():
                 # Map input images to latent space + normalize latents:
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
@@ -202,8 +203,10 @@ def main(args):
             epoch_loss += loss.item()
             _, pred = torch.max(x.data, -1)
             total += y.size(0)
-            epoch_total += y.size(0)
             correct += (pred == y).sum().item()
+            
+            epoch_total += y.size(0)
+            epoch_correct += (pred == y).sum().item()
             
             optimizer.zero_grad()
             loss.backward()
@@ -214,7 +217,7 @@ def main(args):
             log_steps += 1
             train_steps += 1
             
-            if train_steps % args.log_every == 0:
+            if train_steps % args.log_every == 0 and train_steps != 0:
                 # Measure training speed:
                 torch.cuda.synchronize()
                 end_time = time()
@@ -227,8 +230,6 @@ def main(args):
                 logger.info(f"(step={train_steps:08d}) Loss: {avg_loss:.4f}, Running acc: {(correct/total):.3f}, Epoch acc: {(epoch_correct/epoch_total):.3f},  Train Steps/Sec: {steps_per_sec:.2f}")
 
                 # Reset monitoring variables:
-                epoch_total += total
-                epoch_correct += correct
                 correct = 0
                 total = 0
                 running_loss = 0
@@ -269,7 +270,6 @@ def main(args):
                 for x, y in tqdm(test_loader):
                     x, y = x.to(device), y.to(device)
                     x = vae.encode(x).latent_dist.sample().mul_(0.18215)
-                        
                     x = model(x)
                     loss = criterion(x, y)
                     
@@ -278,8 +278,7 @@ def main(args):
                     
                     test_correct += (pred == y).sum().item()
                     test_loss += loss.item()
-            logger.info(f'Testing epoch {epoch}')
-            logger.info(f"Epoch: {epoch}  Test Accuracy: {(test_correct/test_total):.4f} Test Loss: {(test_loss/test_total):.4f}")
+            logger.info(f"Test epoch: {epoch}  Test Accuracy: {(test_correct/test_total):.4f} Test Loss: {(test_loss/test_total):.4f}")
             
     logger.info("Done!")
     cleanup()

@@ -43,9 +43,10 @@ class ImageDataset(Dataset):
     
 def get_transform(image_size=256):
     transform = transforms.Compose([
-        #transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, image_size=image_size)),
-        transforms.Resize((image_size, image_size)),
+        transforms.RandomResizedCrop(image_size),
         transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(degrees=15),
+        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
     ])
