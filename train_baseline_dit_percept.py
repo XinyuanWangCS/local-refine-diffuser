@@ -36,7 +36,7 @@ from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 from model_structures.model_uncondition import *
 
-from transformers import CLIPVisionModel
+# from transformers import CLIPVisionModel
 from model_structures.mlp_mixer import *
 from datasets import load_dataset
 
@@ -333,7 +333,7 @@ if __name__ == "__main__":
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log_every", type=int, default=5)
     parser.add_argument("--ckpt_every", type=int, default=20)
-    parser.add_argument("--tau", type=float, default=0.97)
+    parser.add_argument("--tau", type=float, default=0.90)
     parser.add_argument("--fid_samples", type=int, default=1000)
     parser.add_argument("--example_samples", type=int, default=50)
     parser.add_argument("--num_sampling_steps", type=int, default=1000)
