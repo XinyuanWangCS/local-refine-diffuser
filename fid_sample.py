@@ -147,6 +147,7 @@ def main(args):
         ckpt = torch.load(os.path.join(checkpoints_dir, checkpoint))
         model.load_state_dict(ckpt['model'])
 
+        model = model.to(device)
         model = DDP(model.to(device), device_ids=[rank]) # DataParrallel
         model.eval()
 
