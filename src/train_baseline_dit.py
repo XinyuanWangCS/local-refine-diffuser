@@ -1,29 +1,16 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-
-"""
-A minimal training script for DiT using PyTorch DDP.
-"""
 import torch
 # the first flag below was False when we tested this script but True makes A100 training a lot faster:
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-import torch.nn.functional as func
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torchvision.datasets import ImageFolder
 from torchvision import transforms
 
 import numpy as np
-from tqdm import tqdm
-from collections import OrderedDict
 from PIL import Image
-from copy import deepcopy
 from glob import glob
 from time import time
 import argparse
@@ -121,7 +108,7 @@ def main(args):
         if not os.path.isfile(args.resume):
             raise ValueError(f'checkpoint dir not exist: {args.resume}')
         print("=> loading checkpoint '{}'".format(args.resume))
-        checkpoint = torch.load(args.resume)
+        checkpoint = torch.load(args.resume, map_location=torch.device(f'cuda:{device}'))
         args.start_epoch = checkpoint["epoch"]
         model.load_state_dict(checkpoint["model"])
        
@@ -178,7 +165,7 @@ def main(args):
         num_replicas=dist.get_world_size(),
         rank=rank,
         shuffle=True,
-        seed=args.global_seed # 似乎应该是rank specific seed
+        seed=args.global_seed 
     )
     
     loader = DataLoader(

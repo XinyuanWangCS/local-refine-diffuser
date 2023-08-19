@@ -1,8 +1,6 @@
 from cleanfid import fid
 import os
-from tqdm import tqdm
 import argparse
-from collections import defaultdict
 import pandas as pd
 
 def main(args):

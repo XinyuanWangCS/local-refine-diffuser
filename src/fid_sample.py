@@ -141,14 +141,12 @@ def main(args):
         if rank == 0:
             print('----------------------------------------------')
             print(f'Sampling: {checkpoint}')
-        model = None
-        model = DiT_Uncondition_models[args.model](input_size=latent_size)
-
-        ckpt = torch.load(os.path.join(checkpoints_dir, checkpoint))
+            
+        ckpt = torch.load(os.path.join(checkpoints_dir, checkpoint), map_location=torch.device(f'cuda:{device}'))
+        model = DiT_Uncondition_models[args.model](input_size=latent_size).to(device)
         model.load_state_dict(ckpt['model'])
 
-        model = model.to(device)
-        model = DDP(model.to(device), device_ids=[rank]) # DataParrallel
+        model = DDP(model, device_ids=[rank]) # DataParrallel
         model.eval()
 
         ckpt_name = checkpoint.split('.')[0]

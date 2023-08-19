@@ -26,7 +26,7 @@ from diffusers.models import AutoencoderKL
 from datasets import load_dataset
 
 import logging
-from utils import *
+from utils.utils import *
 
 def create_logger(logging_dir):
     """
