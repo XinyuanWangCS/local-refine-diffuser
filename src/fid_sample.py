@@ -163,7 +163,7 @@ def main(args):
                                 n=batch_size)
         if rank == 0:    
             print(f"Saved {args.fid_samples} images for {ckpt_name}th epoch")
-        
+        model = None
         dist.barrier()
         
 
