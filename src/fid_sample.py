@@ -146,7 +146,7 @@ def main(args):
         model = DiT_Uncondition_models[args.model](input_size=latent_size).to(device)
         model.load_state_dict(ckpt['model'])
 
-        model = DDP(model, device_ids=[rank]) # DataParrallel
+        model = DDP(model, device_ids=[rank]) 
         model.eval()
 
         ckpt_name = checkpoint.split('.')[0]
@@ -163,6 +163,8 @@ def main(args):
                                 n=batch_size)
         if rank == 0:    
             print(f"Saved {args.fid_samples} images for {ckpt_name}th epoch")
+        
+        dist.barrier()
         
 
 
