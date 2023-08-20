@@ -138,7 +138,7 @@ def main(args):
             dataset_name = args.data_path.split('/')[-1]
             experiment_index = len(glob(f"{args.results_dir}/{exp_name}-{dataset_name}*"))
             model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
-            experiment_dir = f"{args.results_dir}/{exp_name}-{dataset_name}-{experiment_index:03d}--{model_string_name}"  # Create an experiment folder
+            experiment_dir = f"{args.results_dir}/{exp_name}-{dataset_name}-{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
             os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
             os.makedirs(experiment_dir, exist_ok=True)
 
