@@ -170,7 +170,6 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    #parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--experiment_dir", type=str, required=True)
     parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-S/4")
     parser.add_argument("--image-size", type=int, choices=[128, 224, 256, 512], default=256)
@@ -179,7 +178,6 @@ if __name__ == "__main__":
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--fid_samples", type=int, default=6000)
-    #parser.add_argument("--example_samples", type=int, default=50)
     parser.add_argument("--num_sampling_steps", type=int, default=250)
     args = parser.parse_args()
     main(args)
