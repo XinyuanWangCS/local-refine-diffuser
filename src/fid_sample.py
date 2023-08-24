@@ -15,17 +15,14 @@ torch.backends.cudnn.allow_tf32 = True
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch import nn
-import torch.nn.functional as func
 from torchvision.transforms import functional as F
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
-import numpy as np
 from tqdm import tqdm
-from collections import OrderedDict
 from PIL import Image
 import argparse
-import logging
 import os
+import time
 
 from model_structures.model_uncondition import DiT_Uncondition_models
 from diffusion import create_diffusion
@@ -135,7 +132,7 @@ def main(args):
     checkpoints_dir = os.path.join(experiment_dir, 'checkpoints')
     if not os.path.exists(checkpoints_dir):
         raise ValueError(f'checkpoints dir not exist: {checkpoints_dir}')
-    checkpoints = sorted(os.listdir(checkpoints_dir))
+    checkpoints = sorted(os.listdir(checkpoints_dir), reverse=True)
 
     for checkpoint in checkpoints:
         if rank == 0:
@@ -165,6 +162,7 @@ def main(args):
             print(f"Saved {args.fid_samples} images for {ckpt_name}th epoch")
         model = None
         dist.barrier()
+        time.sleep(3)
         
 
 

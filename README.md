@@ -32,7 +32,7 @@ Train DiT with ResNet50 encoder perceptual loss:
 
 Sample images for fid evaluation:
 ```bash
-torchrun --nnodes=1 --nproc_per_node=4 src/fid_sample.py --experiment_dir results/baseline-001-ffhq1k--DiT_Uncondition-S-4 --model DiT_Uncondition-S/4 --fid_samples 3000 --image-size 256 --global-batch-size 256 --num_sampling_steps 1000
+torchrun --nnodes=1 --nproc_per_node=4 src/fid_sample.py --experiment_dir results/baseline-001-ffhq1k--DiT_Uncondition-S-4 --model DiT_Uncondition-S/4 --fid_samples 3000 --image-size 256 --global-batch-size 128 --num_sampling_steps 1000
 ```
 
 Evaluate trained checkpoins:
