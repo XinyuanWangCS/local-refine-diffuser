@@ -48,7 +48,7 @@ def cleanup():
 #                          Sample images for FID                                #
 #################################################################################
 
-def generate_samples(ckpt_str, fid_dir, model, diffuser, vae, rank, device, latent_size=32, num_samples=1000, n=16):
+def generate_samples(ckpt_str, fid_dir, model, diffuser, vae, rank, device, seed, latent_size=32, num_samples=1000, n=16):
     # Create random noise for input
     global_batch_size = n * dist.get_world_size()
     
@@ -69,8 +69,11 @@ def generate_samples(ckpt_str, fid_dir, model, diffuser, vae, rank, device, late
     total = 0
     pbar = range(iterations)
     pbar = tqdm(pbar) if rank == 0 else pbar
+    seed_count = 0
     with torch.no_grad():
         for _ in pbar:
+            torch.manual_seed(seed + rank + seed_count * dist.get_world_size())
+            seed_count += 1
             z = torch.randn((n, 4, latent_size, latent_size)).to(device)
             samples = diffuser.p_sample_loop(
                 model.forward, z.shape, z, clip_denoised = False, device = device
@@ -80,7 +83,7 @@ def generate_samples(ckpt_str, fid_dir, model, diffuser, vae, rank, device, late
             samples = torch.clamp(127.5 * samples + 128.0, 0, 255).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
 
             for i, img in enumerate(samples):
-                index = i * dist.get_world_size() + rank + total
+                index = i + rank * n + total
                 if index >= num_samples:
                     return
                 Image.fromarray(img).save(f'{ckpt_fid_samples_dir}/{index:07d}.png')
@@ -103,7 +106,7 @@ def main(args):
     assert args.global_batch_size % dist.get_world_size() == 0, f"Batch size must be divisible by world size."
     rank = dist.get_rank()
     device = rank % torch.cuda.device_count()
-    seed = args.global_seed+rank
+    seed = args.global_seed #TODO
     torch.manual_seed(seed)
     torch.cuda.set_device(device)
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
@@ -116,7 +119,7 @@ def main(args):
     if not os.path.exists(experiment_dir):
         raise ValueError(f'Experiment dir not exist: {experiment_dir}')
 
-    fid_samples_dir = os.path.join(experiment_dir, 'fid_samples')
+    fid_samples_dir = os.path.join(experiment_dir, args.save_dir)
     os.makedirs(fid_samples_dir, exist_ok=True)
 
     # Create model:
@@ -156,7 +159,8 @@ def main(args):
                                 device=device, 
                                 latent_size=latent_size,
                                 num_samples=args.fid_samples, 
-                                n=batch_size)
+                                n=batch_size,
+                                seed=seed)
         if rank == 0:    
             print(f"Saved {args.fid_samples} images for {ckpt_name}th epoch")
         model = None
@@ -168,6 +172,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--experiment_dir", type=str, required=True)
+    parser.add_argument("--save_dir", type=str, default='fid_sample')
     parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-S/4")
     parser.add_argument("--image-size", type=int, choices=[128, 224, 256, 512], default=256)
     parser.add_argument("--global-batch-size", type=int, default=256)
