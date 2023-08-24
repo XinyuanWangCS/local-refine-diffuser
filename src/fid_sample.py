@@ -22,7 +22,6 @@ from tqdm import tqdm
 from PIL import Image
 import argparse
 import os
-import time
 
 from model_structures.model_uncondition import DiT_Uncondition_models
 from diffusion import create_diffusion
@@ -104,7 +103,7 @@ def main(args):
     assert args.global_batch_size % dist.get_world_size() == 0, f"Batch size must be divisible by world size."
     rank = dist.get_rank()
     device = rank % torch.cuda.device_count()
-    seed = args.global_seed
+    seed = args.global_seed+rank
     torch.manual_seed(seed)
     torch.cuda.set_device(device)
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
@@ -162,7 +161,7 @@ def main(args):
             print(f"Saved {args.fid_samples} images for {ckpt_name}th epoch")
         model = None
         dist.barrier()
-        time.sleep(3)
+        
         
 
 
