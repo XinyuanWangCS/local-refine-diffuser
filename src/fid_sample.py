@@ -22,7 +22,7 @@ from tqdm import tqdm
 from PIL import Image
 import argparse
 import os
-
+import time
 from model_structures.model_uncondition import DiT_Uncondition_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
@@ -140,11 +140,12 @@ def main(args):
         if rank == 0:
             print('----------------------------------------------')
             print(f'Sampling: {checkpoint}')
-            
+        model = None
         ckpt = torch.load(os.path.join(checkpoints_dir, checkpoint), map_location=torch.device(f'cuda:{device}'))
         model = DiT_Uncondition_models[args.model](input_size=latent_size).to(device)
         model.load_state_dict(ckpt['model'])
-
+        ckpt = None
+        time.sleep(3)
         model = DDP(model, device_ids=[rank]) 
         model.eval()
 
@@ -163,7 +164,7 @@ def main(args):
                                 seed=seed)
         if rank == 0:    
             print(f"Saved {args.fid_samples} images for {ckpt_name}th epoch")
-        model = None
+        
         dist.barrier()
         
         
