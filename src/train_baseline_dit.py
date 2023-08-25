@@ -12,11 +12,10 @@ from torchvision import transforms
 import numpy as np
 from PIL import Image
 from glob import glob
-from time import time
 import argparse
 import logging
 import os
-
+import time
 from model_structures.model_uncondition import DiT_Uncondition_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
@@ -100,7 +99,9 @@ def main(args):
     latent_size = args.image_size // 8
     model = DiT_Uncondition_models[args.model]( 
         input_size=latent_size
-    )
+    ).to(device)
+    
+    vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     
     train_steps = 0
     # Resume training: continue ckpt args.resume
@@ -109,9 +110,10 @@ def main(args):
             raise ValueError(f'checkpoint dir not exist: {args.resume}')
         print("=> loading checkpoint '{}'".format(args.resume))
         checkpoint = torch.load(args.resume, map_location=torch.device(f'cuda:{device}'))
+        
         args.start_epoch = checkpoint["epoch"]
         model.load_state_dict(checkpoint["model"])
-       
+        
         print("=> loaded checkpoint '{}' (epoch {})".format(
                 args.resume, checkpoint["epoch"]))
         experiment_dir = checkpoint["experiment_dir"]
@@ -123,13 +125,15 @@ def main(args):
         print(f'Build model: {args.model}')
 
     # DataParrallel
-    model = DDP(model.to(device), device_ids=[rank]) 
+    model = DDP(model, device_ids=[rank]) 
+    
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
     d_opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
     if args.resume:
-         d_opt.load_state_dict(checkpoint["d_opt"])
+        d_opt.load_state_dict(checkpoint["d_opt"])
+        checkpoint = None 
+        time.sleep(3)
     diffusion = create_diffusion(str(args.num_sampling_steps))  # default: 1000 steps, linear noise schedule
-    vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     
     # Setup an experiment folder:
     exp_name = args.experiment_name
@@ -185,7 +189,7 @@ def main(args):
     # Variables for monitoring/logging purposes:
     log_steps = 0
     d_running_loss = 0
-    start_time = time()
+    start_time = time.time()
 
     if rank != 0 and not args.resume:
         experiment_index = len(glob(f"{args.results_dir}/{exp_name}*"))
@@ -224,7 +228,7 @@ def main(args):
             if train_steps % args.log_every == 0:
                 # Measure training speed:
                 torch.cuda.synchronize()
-                end_time = time()
+                end_time = time.time()
                 steps_per_sec = log_steps / (end_time - start_time)
                 # Reduce loss history over all processes:
                 d_avg_loss = torch.tensor(d_running_loss / log_steps, device=device)
@@ -237,7 +241,7 @@ def main(args):
                 d_running_loss = 0
 
                 log_steps = 0
-                start_time = time()
+                start_time = time.time()
 
         # Save DiT checkpoint:
         if epoch % args.ckpt_every == 0 or epoch == args.epochs -1:

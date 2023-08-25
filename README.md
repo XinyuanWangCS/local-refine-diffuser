@@ -59,4 +59,4 @@ batch_size 1 per GPU: 5516
 batch_size 2 per GPU: 8244
 batch_size 6 per GPU: 19192
 
-DiT baseline: 4 GPU 384
+DiT baseline: 4 GPU 384 resume 320
