@@ -4,6 +4,16 @@ import argparse
 import os
 
 
+def annotate_points(x, y, ax, interval=1):
+    min_val = min(y)
+    for idx, (xi, yi) in enumerate(zip(x, y)):
+        if yi == min_val:
+            ax.scatter(xi, yi, color='red', zorder=3)
+            ax.annotate(f"{yi:.2f}", (xi, yi), textcoords="offset points", xytext=(0, 5), ha='center', zorder=3)
+        elif idx % interval == 0:
+            ax.annotate(f"{yi:.2f}", (xi, yi), textcoords="offset points", xytext=(0, 5), ha='center')
+            ax.scatter(xi, yi, color='blue')
+
 
 def main(args):
     file_dir = os.path.join(args.experiment_dir, args.xlsx_file)
@@ -12,26 +22,31 @@ def main(args):
     x = data['ckpt_name']
     y1 = data['fid']
     y2 = data['kid']
+    
+    interval = max(1, len(x) // 10)
 
-    plt.figure(figsize=(8, 5))
-    plt.plot(x, y1, label='y1', marker='o')
-    plt.title('ckpt - fid data')
-    plt.xlabel('x')
-    plt.ylabel('y')
-    plt.grid(True)
-    plt.legend()
-    plt.savefig(os.path.join(args.experiment_dir, 'line_chart_fid.png'))  # 保存图表为图片文件
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(x, y1, label='y1', marker='o')
+    annotate_points(x, y1, ax, interval)
+    ax.set_title('ckpt - fid data')
+    ax.set_xlabel('x')
+    ax.set_ylabel('y')
+    ax.grid(True)
+    ax.legend()
+    plt.savefig(os.path.join(args.experiment_dir, 'line_chart_fid.png'))
     plt.show()
 
-    plt.figure(figsize=(8, 5))
-    plt.plot(x, y2, label='y2', marker='s')
-    plt.title('ckpt - kid data')
-    plt.xlabel('x')
-    plt.ylabel('y')
-    plt.grid(True)
-    plt.legend()
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(x, y2, label='y2', marker='s')
+    annotate_points(x, y2, ax, interval)
+    ax.set_title('ckpt - kid data')
+    ax.set_xlabel('x')
+    ax.set_ylabel('y')
+    ax.grid(True)
+    ax.legend()
     plt.savefig(os.path.join(args.experiment_dir, 'line_chart_kid.png'))
     plt.show()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
