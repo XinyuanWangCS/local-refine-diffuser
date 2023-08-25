@@ -144,7 +144,7 @@ def main(args):
         ckpt = torch.load(os.path.join(checkpoints_dir, checkpoint), map_location=torch.device(f'cuda:{device}'))
         model = DiT_Uncondition_models[args.model](input_size=latent_size).to(device)
         model.load_state_dict(ckpt['model'])
-
+        ckpt = None
         model = DDP(model, device_ids=[rank]) 
         model.eval()
 
