@@ -50,6 +50,12 @@ Draw fid, kid plot
 ```bash
 python src/utils/draw.py --experiment_dir results/baseline-ffhq3k-000-DiT_Uncondition-S-4/
 ```
+
+Draw examples
+```bash
+python src/utils/draw_examples.py --experiment_dir results/baseline-ffhq5k-000--DiT_Uncondition-S-4/examples/ --image_num 8 --target_dir results/baseline-ffhq5k-000--DiT_Uncondition-S-4/plot_examples
+```
+
 Memory requirement:
 DiT_Uncondition-S-4:6242
 DiT_Uncondition-B-4: 12178
