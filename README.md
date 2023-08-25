@@ -46,6 +46,10 @@ example: the trained example above and lfw dataset
 python src/eval.py --experiment_dir results/test --train_set_dir dataset/images/ffhq1k
 ```
 
+Draw fid, kid plot
+```bash
+python src/utils/draw.py --experiment_dir results/baseline-ffhq3k-000-DiT_Uncondition-S-4/
+```
 Memory requirement:
 DiT_Uncondition-S-4:6242
 DiT_Uncondition-B-4: 12178
