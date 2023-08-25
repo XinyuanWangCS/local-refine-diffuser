@@ -18,7 +18,7 @@ def plot_images_from_dir(directory, image_num, save_path):
         else:
             ax.axis('off')
     
-    # Ensure no spacing between subplots
+    fig.suptitle(os.path.basename(directory))
     plt.subplots_adjust(wspace=0, hspace=0)
     
     plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
