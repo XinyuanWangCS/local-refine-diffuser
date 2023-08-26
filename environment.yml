@@ -14,3 +14,4 @@ dependencies:
     - clean-fid
     - openpyxl
     - matplotlib
+    - einops

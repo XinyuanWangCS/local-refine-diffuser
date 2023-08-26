@@ -12,6 +12,7 @@ from torchvision import transforms
 import numpy as np
 from PIL import Image
 from glob import glob
+from collections import OrderedDict
 import argparse
 import logging
 import os
@@ -19,11 +20,33 @@ import time
 from model_structures.model_uncondition import DiT_Uncondition_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
+from copy import deepcopy
 
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+    
 #################################################################################
 #                             Training Helper Functions                         #
 #################################################################################
+@torch.no_grad()
+def update_ema(ema_model, model, decay=0.9999):
+    """
+    Step the EMA model towards the current model.
+    """
+    ema_params = OrderedDict(ema_model.named_parameters())
+    model_params = OrderedDict(model.named_parameters())
 
+    for name, param in model_params.items():
+        # TODO: Consider applying only to params that require_grad to avoid small numerical changes of pos_embed
+        ema_params[name].mul_(decay).add_(param.data, alpha=1 - decay)
+        
 def requires_grad(model, flag=True):
     """
     Set requires_grad flag for all parameters in a model.
@@ -99,7 +122,11 @@ def main(args):
     latent_size = args.image_size // 8
     model = DiT_Uncondition_models[args.model]( 
         input_size=latent_size
-    ).to(device)
+    )
+    if args.use_ema:
+        ema = deepcopy(model).to(device)
+        requires_grad(ema, False)
+        ema.eval()
     
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     
@@ -112,10 +139,14 @@ def main(args):
         checkpoint = torch.load(args.resume, map_location=torch.device(f'cuda:{device}'))
         
         args.start_epoch = checkpoint["epoch"]
-        model.load_state_dict(checkpoint["model"])
-        
-        print("=> loaded checkpoint '{}' (epoch {})".format(
-                args.resume, checkpoint["epoch"]))
+        if args.use_ema:
+            model.load_state_dict(checkpoint["ema"])
+            print("=> loaded ema checkpoint '{}' (epoch {})".format(
+                    args.resume, checkpoint["epoch"]))
+        else:
+            model.load_state_dict(checkpoint["model"])
+            print("=> loaded checkpoint '{}' (epoch {})".format(
+                    args.resume, checkpoint["epoch"]))
         experiment_dir = checkpoint["experiment_dir"]
         train_steps = checkpoint["train_steps"]
         logger = create_logger(experiment_dir)
@@ -125,7 +156,7 @@ def main(args):
         print(f'Build model: {args.model}')
 
     # DataParrallel
-    model = DDP(model, device_ids=[rank]) 
+    model = DDP(model.to(device), device_ids=[rank]) 
     
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
     d_opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
@@ -218,6 +249,8 @@ def main(args):
             d_opt.zero_grad()
             d_loss.backward()
             d_opt.step()
+            if args.use_ema:
+                update_ema(ema, model.module)
 
             # Log loss values:
             d_running_loss += d_loss.item()
@@ -246,14 +279,25 @@ def main(args):
         # Save DiT checkpoint:
         if epoch % args.ckpt_every == 0 or epoch == args.epochs -1:
             if rank == 0:
-                checkpoint = {
+                if args.use_ema:
+                    checkpoint = {
                     "model": model.module.state_dict(),
                     "d_opt": d_opt.state_dict(),
                     "epoch":epoch+1,
                     "args": args,
                     "experiment_dir":experiment_dir,
                     "train_steps": train_steps,
+                    "ema": ema.state_dict(),
                 }
+                else:
+                    checkpoint = {
+                        "model": model.module.state_dict(),
+                        "d_opt": d_opt.state_dict(),
+                        "epoch":epoch+1,
+                        "args": args,
+                        "experiment_dir":experiment_dir,
+                        "train_steps": train_steps,
+                    }
                 checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
                 os.makedirs(checkpoint_dir, exist_ok=True)
                 checkpoint_path_fin = os.path.join(checkpoint_dir, f'{epoch:07d}.pt')
@@ -290,6 +334,7 @@ if __name__ == "__main__":
     parser.add_argument("--ckpt_every", type=int, default=20)
     parser.add_argument("--tau", type=float, default=0.9)
     parser.add_argument("--num_sampling_steps", type=int, default=1000)
+    parser.add_argument('--use_ema', type=str2bool, default=True)
     parser.add_argument(
         "--resume",
         default="",
@@ -297,7 +342,6 @@ if __name__ == "__main__":
         metavar="PATH",
         help="path to latest checkpoint (default: none)",
     )
-    parser.add_argument("--continue_training", type=bool, default=False)
     parser.add_argument("--continue_ckpt_dir", type=str, default='')
     parser.add_argument(
         "--start-epoch",

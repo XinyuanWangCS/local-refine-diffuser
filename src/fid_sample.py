@@ -27,6 +27,16 @@ from model_structures.model_uncondition import DiT_Uncondition_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+    
 #################################################################################
 #                             Training Helper Functions                         #
 #################################################################################
@@ -143,7 +153,16 @@ def main(args):
         model = None
         ckpt = torch.load(os.path.join(checkpoints_dir, checkpoint), map_location=torch.device(f'cuda:{device}'))
         model = DiT_Uncondition_models[args.model](input_size=latent_size).to(device)
-        model.load_state_dict(ckpt['model'])
+        
+        if args.use_ema:
+            model.load_state_dict(ckpt["ema"])
+            print("=> loaded ema checkpoint (epoch {})".format(
+                    ckpt["epoch"]))
+        else:
+            model.load_state_dict(ckpt["model"])
+            print("=> loaded checkpoint (epoch {})".format(
+                     ckpt["epoch"]))
+        
         ckpt = None
         time.sleep(3)
         model = DDP(model, device_ids=[rank]) 
@@ -182,5 +201,6 @@ if __name__ == "__main__":
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--fid_samples", type=int, default=6000)
     parser.add_argument("--num_sampling_steps", type=int, default=250)
+    parser.add_argument('--use_ema', type=str2bool, default=False)
     args = parser.parse_args()
     main(args)

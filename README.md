@@ -19,6 +19,9 @@ torchrun --nnodes=1 --nproc_per_node=4 src/train_baseline_dit.py --model DiT_Unc
 torchrun --nnodes=1 --nproc_per_node=4 src/train_baseline_dit.py --model DiT_Uncondition-S/4 --data_path dataset/images/ffhq3k --epochs 15000 --ckpt_every 500 --image-size 256 --global-batch-size 384
 ```
 
+with ema: 
+1 12G gpu: batch size 32  
+
 Train DiT with CLIP encoder perceptual loss:
 ```bash
 torchrun --nnodes=1 --nproc_per_node=2 src/train_with_encoder.py --model DiT_Uncondition-S/4 --data_path dataset/images/lfw_funneled --epochs 100 --ckpt_every 10 --image-size 256 --global-batch-size 12
