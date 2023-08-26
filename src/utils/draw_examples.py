@@ -18,8 +18,11 @@ def plot_images_from_dir(directory, image_num, save_path):
         else:
             ax.axis('off')
     
-    # Ensure no spacing between subplots
-    plt.subplots_adjust(wspace=0, hspace=0)
+    # Set title to the name of the directory with a larger font size
+    fig.suptitle(os.path.basename(directory), fontsize=25)
+    
+    # Ensure no spacing between subplots and adjust space at the top
+    plt.subplots_adjust(wspace=0, hspace=0, top=0.97)
     
     plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
     plt.close()
