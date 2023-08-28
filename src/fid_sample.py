@@ -200,7 +200,7 @@ if __name__ == "__main__":
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--fid_samples", type=int, default=6000)
-    parser.add_argument("--num_sampling_steps", type=int, default=250)
+    parser.add_argument("--num_sampling_steps", type=int, default=1000)
     parser.add_argument('--use_ema', type=str2bool, default=False)
     args = parser.parse_args()
     main(args)
