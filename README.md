@@ -40,8 +40,7 @@ torchrun --nnodes=1 --nproc_per_node=4 src/fid_sample.py --experiment_dir result
 ```
 sample 64 images with fixed seed
 ```bash
-torchrun --nnodes=1 --nproc_per_node=8 src/fid_sample.py --save_dir examples  --experiment_dir results/baseline-ffhq5k-000--DiT_Uncondition-S-4 
---model DiT_Uncondition-S/4 --fid_samples 64 --image-size 256 --global-batch-size 64 --num_sampling_steps 1000
+torchrun --nnodes=1 --nproc_per_node=8 src/fid_sample.py --save_dir examples  --experiment_dir results/baseline-ffhq5k-000--DiT_Uncondition-S-4 --model DiT_Uncondition-S/4 --fid_samples 64 --image-size 256 --global-batch-size 64 --num_sampling_steps 1000
 ```
 Evaluate trained checkpoins:
 example: the trained example above and lfw dataset
