@@ -9,24 +9,48 @@ A minimal training script for DiT using PyTorch DDP.
 """
 import os
 import torch
+import torch.nn as nn
 from tqdm import tqdm
 # the first flag below was False when we tested this script but True makes A100 training a lot faster:
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-import torch.nn.functional as func
 
 from glob import glob
 from time import time
 import argparse
 
-from model_structures.mlp_mixer import *
+from model_structures.mlp_mixer import MLPMixerClassifier
+from model_structures.biggan_classifier import BigGANClassifier
 from diffusers.models import AutoencoderKL
 from datasets import load_dataset
-
+from collections import OrderedDict
+from copy import deepcopy
 import logging
 from utils.utils import *
+
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
+@torch.no_grad()
+def update_ema(ema_model, model, decay=0.9999):
+    """
+    Step the EMA model towards the current model.
+    """
+    ema_params = OrderedDict(ema_model.named_parameters())
+    model_params = OrderedDict(model.named_parameters())
+
+    for name, param in model_params.items():
+        # TODO: Consider applying only to params that require_grad to avoid small numerical changes of pos_embed
+        ema_params[name].mul_(decay).add_(param.data, alpha=1 - decay)
 
 def create_logger(logging_dir):
     """
@@ -82,10 +106,16 @@ def main(args):
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
 
     # Create model:
-    mlp_input_size = args.image_size // 8
-    #model = MLPMixerClassifier(in_channels=4, image_size=mlp_input_size, patch_size=4, num_classes=1000, dim=768, depth=12, token_dim=196, channel_dim=3072)
-    model = MLPMixerClassifier(in_channels=4, image_size=mlp_input_size, patch_size=4, num_classes=1000,
+    input_size = args.image_size // 8
+    if args.model == 'biggan':
+        model = BigGANClassifier(in_channels=4, resolution=input_size, output_dim=1000)
+    elif args.model == 'mlpmixer':
+        model = MLPMixerClassifier(in_channels=4, image_size=input_size, patch_size=4, num_classes=1000,
                  dim=768, depth=12, token_dim=196, channel_dim=1024)
+    if args.use_ema:
+        ema = deepcopy(model).to(device)
+        requires_grad(ema, False)
+        ema.eval()
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     
     train_steps = 0
@@ -94,12 +124,16 @@ def main(args):
         if not os.path.isfile(args.resume):
             raise ValueError(f'checkpoint dir not exist: {args.resume}')
         print("=> loading checkpoint '{}'".format(args.resume))
-        checkpoint = torch.load(args.resume)
+        checkpoint = torch.load(args.resume, map_location=torch.device(f'cuda:{device}'))
         args.start_epoch = checkpoint["epoch"]
-        model.load_state_dict(checkpoint["model"])
-       
-        print("=> loaded checkpoint '{}' (epoch {})".format(
-                args.resume, checkpoint["epoch"]))
+        if args.use_ema:
+            model.load_state_dict(checkpoint["ema"])
+            print("=> loaded ema checkpoint '{}' (epoch {})".format(
+                    args.resume, checkpoint["epoch"]))
+        else:
+            model.load_state_dict(checkpoint["model"])
+            print("=> loaded checkpoint '{}' (epoch {})".format(
+                    args.resume, checkpoint["epoch"]))
         experiment_dir = checkpoint["experiment_dir"]
         train_steps = checkpoint["train_steps"]
         logger = create_logger(experiment_dir)
@@ -113,11 +147,13 @@ def main(args):
     model = DDP(model.to(device), device_ids=[rank]) 
     
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=0)
+    
     criterion = nn.CrossEntropyLoss()
     if args.resume:
-         optimizer.load_state_dict(checkpoint["optimizer"])
-    
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        checkpoint = None
+        
     # Setup an experiment folder:
     exp_name = args.experiment_name
     if not args.resume:
@@ -211,7 +247,9 @@ def main(args):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
+            
+            if args.use_ema:
+                update_ema(ema, model.module)
             # Log loss values:
             running_loss += loss.item()
             log_steps += 1
@@ -240,14 +278,25 @@ def main(args):
         if (epoch % args.ckpt_every == 0 and epoch != 0) or epoch == args.epochs -1:
             
             if rank == 0:
-                checkpoint = {
+                if args.use_ema:
+                    checkpoint = {
                     "model": model.module.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "epoch":epoch+1,
                     "args": args,
                     "experiment_dir":experiment_dir,
                     "train_steps": train_steps,
+                    "ema": ema.state_dict(),
                 }
+                else:
+                    checkpoint = {
+                        "model": model.module.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "epoch":epoch+1,
+                        "args": args,
+                        "experiment_dir":experiment_dir,
+                        "train_steps": train_steps,
+                    }
                 checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
                 os.makedirs(checkpoint_dir, exist_ok=True)
                 checkpoint_path_fin = os.path.join(checkpoint_dir, f'{epoch:08d}.pt')
@@ -286,12 +335,12 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="mlpmixer")
+    parser.add_argument("--model", type=str, default="biggan", choices=['mlpmixer', 'biggan'])
     parser.add_argument("--experiment-name", type=str, default="imagenet_classifer")
-    parser.add_argument("--data-path", type=str, required=True)
+    parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--results-dir", type=str, default="results")
     
-    parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
+    parser.add_argument("--image_size", type=int, choices=[256, 512], default=256)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--global-batch-size", type=int, default=256)
     parser.add_argument("--global-seed", type=int, default=0)
@@ -299,7 +348,9 @@ if __name__ == "__main__":
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--ckpt-every", type=int, default=1)
-    parser.add_argument("--test-every-epoch", type=int, default=1)    
+    parser.add_argument("--test-every-epoch", type=int, default=1) 
+    parser.add_argument('--use_ema', type=str2bool, default=True)
+       
     parser.add_argument(
         "--resume",
         default="",
@@ -307,8 +358,7 @@ if __name__ == "__main__":
         metavar="PATH",
         help="path to latest checkpoint (default: none)",
     )
-    parser.add_argument("--continue_training", type=bool, default=False)
-    parser.add_argument("--continue_ckpt_dir", type=str, default='')
+    parser.add_argument("--continue_training", type=str2bool, default=False)
     parser.add_argument(
         "--start-epoch",
         default=0,
