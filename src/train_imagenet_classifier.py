@@ -23,6 +23,8 @@ import argparse
 
 from model_structures.mlp_mixer import MLPMixerClassifier
 from model_structures.biggan_classifier import BigGANClassifier
+from model_structures.resnet import ResNet
+
 from diffusers.models import AutoencoderKL
 from datasets import load_dataset
 from collections import OrderedDict
@@ -112,6 +114,11 @@ def main(args):
     elif args.model == 'mlpmixer':
         model = MLPMixerClassifier(in_channels=4, image_size=input_size, patch_size=4, num_classes=1000,
                  dim=768, depth=12, token_dim=196, channel_dim=1024)
+    elif args.model == 'resnet':
+        model = ResNet(num_classes=1000)
+    else:
+        raise ValueError(f'{args.model} is not supported.')
+    
     if args.use_ema:
         ema = deepcopy(model).to(device)
         requires_grad(ema, False)
@@ -335,7 +342,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="biggan", choices=['mlpmixer', 'biggan'])
+    parser.add_argument("--model", type=str, default="resnet", choices=['mlpmixer', 'biggan', 'resnet'])
     parser.add_argument("--experiment-name", type=str, default="imagenet_classifer")
     parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--results-dir", type=str, default="results")
