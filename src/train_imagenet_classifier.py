@@ -154,7 +154,7 @@ def main(args):
     model = DDP(model.to(device), device_ids=[rank]) 
     
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=0)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=0)
     
     criterion = nn.CrossEntropyLoss()
     if args.resume:
@@ -166,9 +166,9 @@ def main(args):
     if not args.resume:
         if rank == 0:
             dataset_name = args.data_path.split('/')[-1]
-            experiment_index = len(glob(f"{args.results_dir}/{exp_name}-{dataset_name}*"))
-            model_string_name = args.model  
-            experiment_dir = f"{args.results_dir}/{exp_name}-{dataset_name}-{experiment_index:03d}--{model_string_name}"  # Create an experiment folder
+            model_string_name = args.model 
+            experiment_index = len(glob(f"{args.results_dir}/{exp_name}-{model_string_name}-{dataset_name}*"))
+            experiment_dir = f"{args.results_dir}/{exp_name}-{model_string_name}-{dataset_name}-{experiment_index:03d}"  # Create an experiment folder
             os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
             os.makedirs(experiment_dir, exist_ok=True)
 
