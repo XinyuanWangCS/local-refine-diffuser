@@ -57,7 +57,7 @@ python src/utils/draw_examples.py --experiment_dir results/baseline-ffhq5k-000--
 ```
 ### Train ImageNet Classifier for perceptual loss
 ```bash
-python src/train_imagenet_classifier.py --model biggan --data_path dataset/imagenet1k --image_size 256 --epochs 200 --global-batch-size 256 --log-every 50 --ckpt-every 1 --test-every-epoch 1 --use_ema True
+torchrun --nnodes=1 --nproc_per_node=8  src/train_imagenet_classifier.py --model biggan --data_path dataset/imagenet1k --image_size 256 --epochs 200 --global-batch-size 256 --log-every 50 --ckpt-every 1 --test-every-epoch 1 --use_ema True
 ```
 
 ### Memory requirement:

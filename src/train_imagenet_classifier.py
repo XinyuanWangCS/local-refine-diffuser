@@ -211,7 +211,7 @@ def main(args):
         experiment_index = len(glob(f"{args.results_dir}/{exp_name}*"))
         dataset_name = args.data_path.split('/')[-1]
         model_string_name = args.model
-        experiment_dir = f"{args.results_dir}/{exp_name}-{dataset_name}-{experiment_index:03d}--{model_string_name}"
+        experiment_dir = f"{args.results_dir}/{exp_name}-{dataset_name}-{experiment_index:03d}-{model_string_name}"
 
     # Variables for monitoring/logging purposes:
     log_steps = 0
@@ -358,7 +358,6 @@ if __name__ == "__main__":
         metavar="PATH",
         help="path to latest checkpoint (default: none)",
     )
-    parser.add_argument("--continue_training", type=str2bool, default=False)
     parser.add_argument(
         "--start-epoch",
         default=0,

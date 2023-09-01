@@ -78,7 +78,7 @@ def D_arch(ch=64, attention='64',ksize='333333', dilation='111111'):
                               for i in range(2,7)}}
   arch[32]  = {'in_channels' :  [item * ch for item in [4, 4, 4]],
                'out_channels' : [item * ch for item in [4, 4, 4]],
-               'downsample' : [True, True, False, False],
+               'downsample' : [True, True, True, False],
                'resolution' : [16, 16, 16, 16],
                'attention' : {2**i: 2**i in [int(item) for item in attention.split('_')]
                               for i in range(2,6)}}
@@ -139,7 +139,12 @@ class BigGANClassifier(nn.Module):
     
     # Linear output layer. The output dimension is typically 1, but may be
     # larger if we're e.g. turning this into a VAE with an inference output
-    self.linear = self.which_linear(self.arch['out_channels'][-1], output_dim)
+    hidden_size = self.resolution
+    for down in self.arch['downsample']:
+      if down:
+        hidden_size /= 2
+    
+    self.linear = self.which_linear(self.arch['out_channels'][-1] * (int(hidden_size))**2, output_dim)
     # Embedding for projection discrimination
     if self.t_condition is not None:
       self.embed = self.which_embedding(self.t_condition, self.arch['out_channels'][-1])
@@ -223,7 +228,7 @@ class BigGANEncoder(nn.Module):
                                               self.which_conv)]
     # Turn self.blocks into a ModuleList so that it's all properly registered.
     self.blocks = nn.ModuleList([nn.ModuleList(block) for block in self.blocks])
-    
+    self.flatten = nn.Flatten()
 
     # Initialize weights
     if not skip_init:
@@ -255,7 +260,7 @@ class BigGANEncoder(nn.Module):
       for block in blocklist:
         h = block(h)
     # Apply global sum pooling as in SN-GAN
-    h = torch.sum(self.activation(h), [2, 3])
     
-    return h
+    #h = torch.sum(self.activation(h), [2, 3])
+    return self.flatten(self.activation(h))
 
