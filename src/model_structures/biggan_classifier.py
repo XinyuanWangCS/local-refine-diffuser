@@ -3,14 +3,13 @@ import functools
 import torch
 import torch.nn as nn
 from torch.nn import init
-import torch.optim as optim
 import torch.nn.functional as F
-import layers
+from .layers import SNConv2d, SNLinear, SNEmbedding, Attention
 
 # BigGAN-deep: uses a different resblock and pattern
 
 class DBlock(nn.Module):
-  def __init__(self, in_channels, out_channels, which_conv=layers.SNConv2d, wide=True,
+  def __init__(self, in_channels, out_channels, which_conv=SNConv2d, wide=True,
                preactivation=True, activation=None, downsample=None,
                channel_ratio=4):
     super(DBlock, self).__init__()
@@ -85,14 +84,13 @@ def D_arch(ch=64, attention='64',ksize='333333', dilation='111111'):
                               for i in range(2,6)}}
   return arch
 
-class Discriminator(nn.Module):
-
-  def __init__(self, D_ch=64, D_wide=True, D_depth=2, resolution=32,
+class BigGANClassifier(nn.Module):
+  def __init__(self, in_channels=4, D_ch=64, D_wide=True, D_depth=2, resolution=32,
                D_kernel_size=3, D_attn='64', t_condition=None,#1000,
                num_D_SVs=1, num_D_SV_itrs=1, D_activation=nn.ReLU(inplace=False),
-               SN_eps=1e-12, output_dim=1, 
+               SN_eps=1e-12, output_dim=2, 
                D_init='ortho', skip_init=False, D_param='SN', **kwargs):
-    super(Discriminator, self).__init__()
+    super(BigGANClassifier, self).__init__()
     # Width multiplier
     self.ch = D_ch
     # Use Wide D as in BigGAN and SA-GAN or skinny D as in SN-GAN?
@@ -117,26 +115,95 @@ class Discriminator(nn.Module):
     self.SN_eps = SN_eps
     # Architecture
     self.arch = D_arch(self.ch, self.attention)[resolution]
+    self.in_channels = in_channels
+    
+    # Which convs, batchnorms, and linear layers to use
+    # No option to turn off SN in D right now
+    if self.D_param == 'SN':
+      self.which_conv = functools.partial(SNConv2d,
+                          kernel_size=3, padding=1,
+                          num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
+                          eps=self.SN_eps)
+      self.which_linear = functools.partial(SNLinear,
+                          num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
+                          eps=self.SN_eps)
+      self.which_embedding = functools.partial(SNEmbedding,
+                              num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
+                              eps=self.SN_eps)
+      
+    self.encoder = BigGANEncoder(in_channels=self.in_channels, D_ch=D_ch, D_wide=D_wide, D_depth=D_depth, resolution=resolution,
+               D_kernel_size=D_kernel_size, D_attn=D_attn, 
+               num_D_SVs=num_D_SVs, num_D_SV_itrs=num_D_SV_itrs, D_activation=D_activation,
+               SN_eps=SN_eps, 
+               D_init=D_init, skip_init=skip_init, D_param=D_param)
+    
+    # Linear output layer. The output dimension is typically 1, but may be
+    # larger if we're e.g. turning this into a VAE with an inference output
+    self.linear = self.which_linear(self.arch['out_channels'][-1], output_dim)
+    # Embedding for projection discrimination
+    if self.t_condition is not None:
+      self.embed = self.which_embedding(self.t_condition, self.arch['out_channels'][-1])
+      
+  def forward(self, x, t=None):
+    h = self.encoder(x=x, t=t)
+    # Get initial class-unconditional output
+    out = self.linear(h)
+    # Get projection of final featureset onto class vectors and add to evidence
+    if t is not None:
+      out = out + torch.sum(self.embed(t) * h, 1, keepdim=True)
+      
+    return out
+  
+  
+class BigGANEncoder(nn.Module):
+
+  def __init__(self, in_channels=4, D_ch=64, D_wide=True, D_depth=2, resolution=32,
+               D_kernel_size=3, D_attn='64', 
+               num_D_SVs=1, num_D_SV_itrs=1, D_activation=nn.ReLU(inplace=False),
+               SN_eps=1e-12, D_init='ortho', skip_init=False, D_param='SN', **kwargs):
+    super(BigGANEncoder, self).__init__()
+    # Width multiplier
+    self.ch = D_ch
+    # Use Wide D as in BigGAN and SA-GAN or skinny D as in SN-GAN?
+    self.D_wide = D_wide
+    # How many resblocks per stage?
+    self.D_depth = D_depth
+    # Resolution
+    self.resolution = resolution
+    # Kernel size
+    self.kernel_size = D_kernel_size
+    # Attention?
+    self.attention = D_attn
+    # Activation
+    self.activation = D_activation
+    # Initialization style
+    self.init = D_init
+    # Parameterization style
+    self.D_param = D_param
+    # Epsilon for Spectral Norm?
+    self.SN_eps = SN_eps
+    # Architecture
+    self.arch = D_arch(self.ch, self.attention)[resolution]
+    self.in_channels = in_channels
 
 
     # Which convs, batchnorms, and linear layers to use
     # No option to turn off SN in D right now
     if self.D_param == 'SN':
-      self.which_conv = functools.partial(layers.SNConv2d,
+      self.which_conv = functools.partial(SNConv2d,
                           kernel_size=3, padding=1,
                           num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
                           eps=self.SN_eps)
-      self.which_linear = functools.partial(layers.SNLinear,
+      self.which_linear = functools.partial(SNLinear,
                           num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
                           eps=self.SN_eps)
-      self.which_embedding = functools.partial(layers.SNEmbedding,
+      self.which_embedding = functools.partial(SNEmbedding,
                               num_svs=num_D_SVs, num_itrs=num_D_SV_itrs,
                               eps=self.SN_eps)
     
-    
     # Prepare model
     # Stem convolution
-    self.input_conv = self.which_conv(3, self.arch['in_channels'][0])
+    self.input_conv = self.which_conv(self.in_channels, self.arch['in_channels'][0])
     # self.blocks is a doubly-nested list of modules, the outer loop intended
     # to be over blocks at a given resolution (resblocks and/or self-attention)
     self.blocks = []
@@ -152,16 +219,11 @@ class Discriminator(nn.Module):
       # If attention on this block, attach it to the end
       if self.arch['attention'][self.arch['resolution'][index]]:
         print('Adding attention layer in D at resolution %d' % self.arch['resolution'][index])
-        self.blocks[-1] += [layers.Attention(self.arch['out_channels'][index],
+        self.blocks[-1] += [Attention(self.arch['out_channels'][index],
                                               self.which_conv)]
     # Turn self.blocks into a ModuleList so that it's all properly registered.
     self.blocks = nn.ModuleList([nn.ModuleList(block) for block in self.blocks])
-    # Linear output layer. The output dimension is typically 1, but may be
-    # larger if we're e.g. turning this into a VAE with an inference output
-    self.linear = self.which_linear(self.arch['out_channels'][-1], output_dim)
-    # Embedding for projection discrimination
-    if self.t_condition is not None:
-      self.embed = self.which_embedding(self.t_condition, self.arch['out_channels'][-1])
+    
 
     # Initialize weights
     if not skip_init:
@@ -194,10 +256,6 @@ class Discriminator(nn.Module):
         h = block(h)
     # Apply global sum pooling as in SN-GAN
     h = torch.sum(self.activation(h), [2, 3])
-    # Get initial class-unconditional output
-    out = self.linear(h)
-    # Get projection of final featureset onto class vectors and add to evidence
-    if t is not None:
-      out = out + torch.sum(self.embed(t) * h, 1, keepdim=True)
-    return out
+    
+    return h
 
