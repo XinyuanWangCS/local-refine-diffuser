@@ -43,7 +43,7 @@ torchrun --nnodes=1 --nproc_per_node=8 src/fid_sample.py --save_dir examples  --
 ### Evaluate trained checkpoins:
 example: the trained example above and lfw dataset
 ```bash
-python src/eval.py --experiment_dir results/test --train_set_dir dataset/images/ffhq1k
+python src/eval.py --experiment_dir results/test --train_set_dir dataset/images/ffhq1k --folder_name fid_samples --file_name 'eval_scores.xlsx' --cal_kid False
 ```
 
 ### Draw fid, kid plot

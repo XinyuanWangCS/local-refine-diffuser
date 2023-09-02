@@ -21,7 +21,7 @@ def main(args):
 
     x = data['ckpt_name']
     y1 = data['fid']
-    y2 = data['kid']
+    
     
     interval = max(1, len(x) // 10)
 
@@ -36,6 +36,7 @@ def main(args):
     plt.savefig(os.path.join(args.experiment_dir, 'line_chart_fid.png'))
     plt.show()
 
+    y2 = data['kid']
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(x, y2, label='y2', marker='s')
     annotate_points(x, y2, ax, interval)
