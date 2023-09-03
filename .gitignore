@@ -4,6 +4,7 @@ results/
 diffusion/__pycache__/
 run_DiT.ipynb
 experiment/
+encoder_ckpts/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

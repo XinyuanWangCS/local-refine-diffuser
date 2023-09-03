@@ -12,19 +12,12 @@ conda activate DiT
 GPU: Nvidia A4500 10G * 4
 example: use DiT_Uncondition-B/4 backbone and ffhq1k dataset
 ```bash
-torchrun --nnodes=1 --nproc_per_node=4 src/train_baseline_dit.py --model DiT_Uncondition-B/4 --data_path dataset/images/ffhq1k --epochs 15000 --ckpt_every 500 --image-size 256 --global-batch-size 276
+torchrun --nnodes=1 --nproc_per_node=4 src/train_baseline_dit.py --model DiT_Uncondition-B/4 --data_path dataset/ffhq256 --image-size 256 --total_steps 500000 --ckpt_every_step 10000  --global-batch-size 256 --use_ema True
 ```
 
+### Train DiT with ResNet perceptual loss:
 ```bash
-torchrun --nnodes=1 --nproc_per_node=4 src/train_baseline_dit.py --model DiT_Uncondition-S/4 --data_path dataset/images/ffhq3k --epochs 15000 --ckpt_every 500 --image-size 256 --global-batch-size 384
-```
-
-with ema: 
-1 12G gpu: batch size 32  
-
-### Train DiT with CLIP encoder perceptual loss:
-```bash
-torchrun --nnodes=1 --nproc_per_node=2 src/train_with_encoder.py --model DiT_Uncondition-S/4 --data_path dataset/images/lfw_funneled --epochs 100 --ckpt_every 10 --image-size 256 --global-batch-size 12
+torchrun --nnodes=1 --nproc_per_node=4 src/train_dit_perceptual_loss.py --model DiT_Uncondition-B/4 --data_path dataset/ffhq256 --image-size 256 --total_steps 500000 --ckpt_every_step 10000  --global-batch-size 128 --use_ema True --perceptual_encoder resnet --encoder_ckpt encoder_ckpts/resnet00000030.pt
 ```
 
 ### Train DiT with ResNet50 encoder perceptual loss:

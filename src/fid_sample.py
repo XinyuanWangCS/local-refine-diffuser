@@ -163,8 +163,8 @@ def main(args):
             print("=> loaded checkpoint (epoch {})".format(
                      ckpt["epoch"]))
         
-        ckpt = None
-        time.sleep(3)
+        del ckpt
+        time.sleep(1)
         model = DDP(model, device_ids=[rank]) 
         model.eval()
 

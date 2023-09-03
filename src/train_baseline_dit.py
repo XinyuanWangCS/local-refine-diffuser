@@ -162,8 +162,8 @@ def main(args):
     d_opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
     if args.resume:
         d_opt.load_state_dict(checkpoint["d_opt"])
-        checkpoint = None 
-        time.sleep(3)
+        del checkpoint 
+        time.sleep(1)
     diffusion = create_diffusion(str(args.num_sampling_steps))  # default: 1000 steps, linear noise schedule
     
     # Setup an experiment folder:
@@ -225,8 +225,8 @@ def main(args):
         model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
         experiment_dir = f"{args.results_dir}/{exp_name}-{experiment_index:03d}-{dataset_name}--{model_string_name}"  # Create an experiment folder
 
-    logger.info(f"Total epoch number: {args.epochs}.")
-    for epoch in range(args.start_epoch, args.epochs):
+    logger.info(f"Total step number: {args.total_steps}.")
+    for epoch in range(args.start_epoch, 100000):
         model.train()
         sampler.set_epoch(epoch)
         logger.info(f"Begin epoch: {epoch}")
@@ -304,7 +304,7 @@ def main(args):
                 logger.info("Done!")
                 cleanup()
             
-            dist.barrier()
+        dist.barrier()
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -313,7 +313,7 @@ if __name__ == "__main__":
     parser.add_argument("--results-dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-B/4")
     parser.add_argument("--image-size", type=int, choices=[128, 224, 256, 512], default=256)
-    parser.add_argument("--total_steps", type=int, default=50000)
+    parser.add_argument("--total_steps", type=int, default=500000)
     parser.add_argument("--global-batch-size", type=int, default=256)
     parser.add_argument("--global-seed", type=int, default=0)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema") 
@@ -329,7 +329,6 @@ if __name__ == "__main__":
         metavar="PATH",
         help="path to latest checkpoint (default: none)",
     )
-    parser.add_argument("--continue_ckpt_dir", type=str, default='')
     parser.add_argument(
         "--start-epoch",
         default=0,

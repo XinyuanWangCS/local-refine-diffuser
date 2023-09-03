@@ -7,8 +7,6 @@
 """
 A minimal training script for DiT using PyTorch DDP.
 """
-import math
-from tqdm import tqdm
 import torch
 import torch.nn as nn
 # the first flag below was False when we tested this script but True makes A100 training a lot faster:
@@ -24,27 +22,46 @@ from torchvision import transforms
 import numpy as np
 from collections import OrderedDict
 from PIL import Image
-from copy import deepcopy
 from glob import glob
-from time import time
+import time
 import argparse
 import logging
 import os
-# os.environ['CUDA LAUNCH BLOCKING'] = '1'
 
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
-from model_structures.model_uncondition import *
+from model_structures.model_uncondition import DiT_Uncondition_models
 
-# from transformers import CLIPVisionModel
-from model_structures.mlp_mixer import *
-from datasets import load_dataset
+from model_structures.mlp_mixer import MLPMixerClassifier
+from model_structures.biggan_classifier import BigGANClassifier
+from model_structures.resnet import ResNet
+from copy import deepcopy
 
 #################################################################################
 #                             Training Helper Functions                         #
 #################################################################################
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
+@torch.no_grad()
+def update_ema(ema_model, model, decay=0.9999):
+    """
+    Step the EMA model towards the current model.
+    """
+    ema_params = OrderedDict(ema_model.named_parameters())
+    model_params = OrderedDict(model.named_parameters())
 
+    for name, param in model_params.items():
+        # TODO: Consider applying only to params that require_grad to avoid small numerical changes of pos_embed
+        ema_params[name].mul_(decay).add_(param.data, alpha=1 - decay)
+   
 def requires_grad(model, flag=True):
     """
     Set requires_grad flag for all parameters in a model.
@@ -118,75 +135,102 @@ def main(args):
     torch.manual_seed(seed)
     torch.cuda.set_device(device)
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
-    num_sampling_steps = args.num_sampling_steps
-
-    # Setup an experiment folder:
-    if rank == 0:
-        experiment_index = len(glob(f"{args.results_dir}/*"))
-        dataset_name = args.data_path.split('/')[-1]
-        model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
-        experiment_dir = f"{args.results_dir}/{dataset_name}-{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
-        os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
-        os.makedirs(experiment_dir, exist_ok=True)
-
-        logger = create_logger(experiment_dir)
-        logger.info(f"Experiment directory created at {experiment_dir}")
-        
-        args_logger = logging.getLogger("args logger")
-        args_logger.setLevel(logging.INFO)
-        file_handler = logging.FileHandler(os.path.join(experiment_dir, 'args.log'))
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(formatter)
-        args_logger.addHandler(file_handler)
-        arg_dict = vars(args)
-        for key, value in arg_dict.items():
-            args_logger.info(f"{key}: {value}")
-    else:
-        logger = create_logger(None)
 
     # Create model:
+    train_steps = 0
     assert args.image_size % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
     latent_size = args.image_size // 8
-
     model = DiT_Uncondition_models[args.model]( 
         input_size=latent_size
     )
-    print(f'Build model: {args.model}')
-    # MLP Encoder
-    mlp = MLPMixerClassifier(in_channels=4, image_size=latent_size, patch_size=4, 
-                                     num_classes=1000, dim=768, depth=12, token_dim=196, channel_dim=1024)
+    if args.use_ema:
+        ema = deepcopy(model).to(device)
+        requires_grad(ema, False)
+        ema.eval()
+    
+    vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
+    
+    # Setup an experiment folder:
+    exp_name = args.experiment_name
+    if rank == 0:
+        dataset_name = args.data_path.split('/')[-1]
+        experiment_index = len(glob(f"{args.results_dir}/{exp_name}-{dataset_name}*"))
+        model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
+        experiment_dir = f"{args.results_dir}/{exp_name}-{dataset_name}-{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
+        os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
+        os.makedirs(experiment_dir, exist_ok=True)
+        logger = create_logger(experiment_dir)
+        logger.info('------------------------------------------')
+        logger.info(f'Build model: {args.model}')
+        logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
+        logger.info(f"Experiment directory created at {experiment_dir}")
+        logger.info("Arguments:")
+        for k, v in vars(args).items():
+            logger.info(f'{k}: {v}')
+        logger.info('------------------------------------------')
+    else:
+        logger = create_logger(None)
+        
+    # Resume training: continue ckpt args.resume
     if args.resume:
         if not os.path.isfile(args.resume):
             raise ValueError(f'checkpoint dir not exist: {args.resume}')
-        print("=> loading checkpoint '{}'".format(args.resume))
-        checkpoint = torch.load(args.resume)
-        mlp.load_state_dict(checkpoint["model"])
-        print(f'load ckpt {args.resume} successfully')
+        
+        checkpoint = torch.load(args.resume, map_location=torch.device(f'cuda:{device}'))
+
+        if args.use_ema:
+            model.load_state_dict(checkpoint["ema"])
+            logger.info(f"=> loaded ema checkpoint {args.resume}")
+        else:
+            model.load_state_dict(checkpoint["model"])
+            logger.info(f"=> loaded non-ema checkpoint {args.resume}")
+        del checkpoint
+        
+    encoder_ckpt = None
+    if args.encoder_ckpt:
+        if not os.path.isfile(args.encoder_ckpt):
+            raise ValueError(f'Encoder checkpoint dir does not exist: {args.encoder_ckpt}.')
+    
+        encoder_ckpt = torch.load(args.encoder_ckpt, map_location=torch.device(f'cuda:{device}'))
+        if rank==0:
+            logger.info("=> load encoder checkpoint '{}'".format(args.encoder_ckpt))
+    
+    if args.perceptual_encoder == 'biggan':
+        encoder = BigGANClassifier(in_channels=4, resolution=latent_size, output_dim=1000).to(device)
+        if args.encoder_ckpt:
+            encoder.load_state_dict(encoder_ckpt['model'])
+            if rank==0:
+                logger.info("=> load encoder state_dict")
+        encoder = encoder.encoder
+    elif args.perceptual_encoder == 'mlpmixer':
+        encoder = MLPMixerClassifier(in_channels=4, image_size=latent_size, patch_size=4, num_classes=1000,
+                 dim=768, depth=12, token_dim=196, channel_dim=1024).to(device)
+        if args.encoder_ckpt:
+            encoder.load_state_dict(encoder_ckpt['model'])
+            if rank==0:
+                logger.info("=> load encoder state_dict")
+        encoder = encoder.mlp_mixer
+    elif args.perceptual_encoder == 'resnet': #[batchsize, 2048]
+        encoder = ResNet(resolution=latent_size, num_classes=1000).to(device)
+        if args.encoder_ckpt:
+            encoder.load_state_dict(encoder_ckpt['model'])
+            if rank==0:
+                logger.info("=> load encoder state_dict")
+        encoder.resnet.avgpool = nn.Identity()
+        encoder.resnet.fc = nn.Identity()
     else:
-        print('No pretrained encoder')
+        raise ValueError(f'{args.encoder} is not supported.')
+    del encoder_ckpt
+    requires_grad(encoder, False)
+    encoder.eval()
     
-    # checkpoint = torch.load(args.MLP)
-    # mlp_encoder = MLPMixerClassifier(in_channels=4, image_size=latent_size, patch_size=4, num_classes=1000,
-    #              dim=768, depth=12, token_dim=196, channel_dim=3072).mlp_mixer
-    mlp_encoder = mlp.mlp_mixer
-    mlp_encoder = mlp_encoder.to(device)
-    # mlp_encoder.load_state_dict(checkpoint["model"])
-    requires_grad(mlp_encoder, False)
-    
-    
-    # Note that parameter initialization is done within the DiT constructor
-    # ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
-    # requires_grad(ema, False)
     model = DDP(model.to(device), device_ids=[rank]) # DataParrallel
-    
-    diffusion = create_diffusion(str(num_sampling_steps))  # default: 1000 steps, linear noise schedule
-    vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
-    logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
-    
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
-    opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
-    
-        # Setup data:
+    d_opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
+        
+    diffusion = create_diffusion(str(args.num_sampling_steps))  # default: 1000 steps, linear noise schedule
+
+    # Setup data:
     transform = transforms.Compose([
         transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)),
         transforms.RandomHorizontalFlip(),
@@ -200,7 +244,7 @@ def main(args):
         num_replicas=dist.get_world_size(),
         rank=rank,
         shuffle=True,
-        seed=args.global_seed # 似乎应该是rank specific seed
+        seed=args.global_seed 
     )
     
     loader = DataLoader(
@@ -214,29 +258,16 @@ def main(args):
     )
     logger.info(f"Dataset contains {len(dataset):,} images ({args.data_path})")
 
-    # Prepare models for training:
-    # update_ema(ema, model.module, decay=0)  # Ensure EMA is initialized with synced weights
-    model.train()  # important! This enables embedding dropout for classifier-free guidance
-    # ema.eval()  # EMA model should always be in eval mode
-
+    tau = args.tau
     # Variables for monitoring/logging purposes:
-    train_steps = 0
     log_steps = 0
-    running_loss = 0
     d_running_loss = 0
     p_running_loss = 0
-    start_time = time()
+    running_loss = 0
+    start_time = time.time()
 
-    tau = args.tau
-    
-    if rank != 0:
-        experiment_index = len(glob(f"{args.results_dir}/*"))-1
-        dataset_name = args.data_path.split('/')[-1]
-        model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
-        experiment_dir = f"{args.results_dir}/encoder_loss-{dataset_name}-{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
-
-    logger.info(f"Training for {args.epochs} epochs...")
-    for epoch in range(args.epochs):
+    logger.info(f"Total step number: {args.total_steps}.")
+    for epoch in range(args.start_epoch, 100000):
         model.train()
         sampler.set_epoch(epoch)
         logger.info(f"Beginning epoch {epoch}...")
@@ -248,21 +279,21 @@ def main(args):
                 # Map input images to latent space + normalize latents:
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
             t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
-            model_kwargs = dict() #y=y
-            loss_dict = diffusion.training_losses_step_output(model, x, t, model_kwargs)
+            loss_dict = diffusion.training_losses_step_output(model, x, t)
             pred_xt, gt_xt = loss_dict["pred_xt"], loss_dict["gt_xt"]
             dm_loss = loss_dict["loss"].mean()
             with torch.no_grad():
-                feature_pred_xt = mlp_encoder(pred_xt).mean(dim=0)
-                feature_gt_xt = mlp_encoder(gt_xt).mean(dim=0)
+                feature_pred_xt = encoder(pred_xt)
+                feature_gt_xt = encoder(gt_xt)
             
             percept_loss = ((feature_pred_xt - feature_gt_xt)**2).mean()
             
             loss = tau * dm_loss + (1-tau) * percept_loss
-            opt.zero_grad()
+            d_opt.zero_grad()
             loss.backward()
-            opt.step()
-            # update_ema(ema, model.module)
+            d_opt.step()
+            if args.use_ema:
+                update_ema(ema, model.module)
             
             # Log loss values:
             p_running_loss += percept_loss.item()
@@ -274,7 +305,7 @@ def main(args):
             if train_steps % args.log_every == 0:
                 # Measure training speed:
                 torch.cuda.synchronize()
-                end_time = time()
+                end_time = time.time()
                 steps_per_sec = log_steps / (end_time - start_time)
                 # Reduce loss history over all processes:
                 avg_loss = torch.tensor(running_loss / log_steps, device=device)
@@ -297,47 +328,60 @@ def main(args):
                 p_running_loss = 0
 
                 log_steps = 0
-                start_time = time()
+                start_time = time.time()
 
         # Save DiT checkpoint:
-        if epoch % args.ckpt_every == 0 or epoch == args.epochs -1:
-            if rank == 0:
-                checkpoint = {
-                    "model": model.module.state_dict(),
-                    # "ema": ema.state_dict(),
-                    "opt": opt.state_dict(),
-                    "args": args
-                }
-                checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
-                os.makedirs(checkpoint_dir, exist_ok=True)
-                checkpoint_path_fin = os.path.join(checkpoint_dir, f'{epoch:07d}.pt')
-                torch.save(checkpoint, checkpoint_path_fin)
-                logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
-            dist.barrier()
-
-    logger.info("Done!")
-    cleanup()
+            if train_steps % args.ckpt_every_step == 0 or train_steps == args.total_steps -1:
+                if rank == 0:
+                    if args.use_ema:
+                        checkpoint = {
+                        "model": model.module.state_dict(),
+                        "d_opt": d_opt.state_dict(),
+                        "epoch":epoch+1,
+                        "args": args,
+                        "experiment_dir":experiment_dir,
+                        "train_steps": train_steps,
+                        "ema": ema.state_dict(),
+                    }
+                    else:
+                        checkpoint = {
+                            "model": model.module.state_dict(),
+                            "d_opt": d_opt.state_dict(),
+                            "epoch":epoch+1,
+                            "args": args,
+                            "experiment_dir":experiment_dir,
+                            "train_steps": train_steps,
+                        }
+                    checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
+                    os.makedirs(checkpoint_dir, exist_ok=True)
+                    checkpoint_path_fin = os.path.join(checkpoint_dir, f'{train_steps:08d}.pt')
+                    torch.save(checkpoint, checkpoint_path_fin)
+                    logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
+            
+            if train_steps >= args.total_steps:
+                logger.info("Done!")
+                cleanup()
+            
+        dist.barrier()
 
 
 if __name__ == "__main__":
     # Default args here will train DiT-XL/2 with the hyperparameters we used in our paper (except training iters).
     parser = argparse.ArgumentParser()
+    parser.add_argument("--experiment_name", type=str, default="perceptual")
     parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--results-dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-B/4")
-    parser.add_argument("--image-size", type=int, choices=[128, 224, 256, 512], default=224)
-    parser.add_argument("--epochs", type=int, default=1200)
+    parser.add_argument("--image-size", type=int, choices=[128, 224, 256, 512], default=256)
+    parser.add_argument("--total_steps", type=int, default=500000)
     parser.add_argument("--global-batch-size", type=int, default=256)
     parser.add_argument("--global-seed", type=int, default=0)
-    parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
+    parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema") 
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--log_every", type=int, default=5)
-    parser.add_argument("--ckpt_every", type=int, default=20)
-    parser.add_argument("--tau", type=float, default=0.90)
-    parser.add_argument("--fid_samples", type=int, default=1000)
-    parser.add_argument("--example_samples", type=int, default=50)
+    parser.add_argument("--log_every", type=int, default=20)
+    parser.add_argument("--ckpt_every_step", type=int, default=10000)
     parser.add_argument("--num_sampling_steps", type=int, default=1000)
-    parser.add_argument("--encoder", type=str, default='clip')
+    parser.add_argument('--use_ema', type=str2bool, default=True)
     parser.add_argument(
         "--resume",
         default="",
@@ -345,9 +389,24 @@ if __name__ == "__main__":
         metavar="PATH",
         help="path to latest checkpoint (default: none)",
     )
+    parser.add_argument(
+        "--start-epoch",
+        default=0,
+        type=int,
+        metavar="N",
+        help="manual epoch number (useful on restarts)",
+    )
+    
+    parser.add_argument("--tau", type=float, default=0.9)
+    parser.add_argument("--perceptual_encoder", type=str, default="resnet", choices=['mlpmixer', 'biggan', 'resnet'])
+    parser.add_argument(
+        "--encoder_ckpt",
+        default="",
+        type=str,
+        metavar="PATH",
+        help="path to the encoder's checkpoint",
+    )
     args = parser.parse_args()
-    # torch.cuda.empty_cache()
-    # torch.backends.cuda.reserved_memory = 0
     main(args)
 
     
