@@ -330,8 +330,8 @@ def main(args):
                 log_steps = 0
                 start_time = time.time()
 
-        # Save DiT checkpoint:
-            if train_steps % args.ckpt_every_step == 0 or train_steps == args.total_steps -1:
+            # Save DiT checkpoint:
+            if train_steps % args.ckpt_every_step == 0 or train_steps == args.total_steps -1 or train_steps==1:
                 if rank == 0:
                     if args.use_ema:
                         checkpoint = {
