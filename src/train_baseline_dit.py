@@ -214,9 +214,6 @@ def main(args):
     )
     logger.info(f"Dataset contains {len(dataset):,} images ({args.data_path})")
 
-    # Prepare models for training:
-    model.train()  # important! This enables embedding dropout for classifier-free guidance
-
     # Variables for monitoring/logging purposes:
     log_steps = 0
     d_running_loss = 0
@@ -241,8 +238,8 @@ def main(args):
                 # Map input images to latent space + normalize latents:
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
             t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
-            model_kwargs = dict() #y=y
-            loss_dict = diffusion.training_losses(model, x, t, model_kwargs)
+
+            loss_dict = diffusion.training_losses(model, x, t)
             dm_loss = loss_dict["loss"].mean()
             
             d_loss = dm_loss
@@ -272,51 +269,42 @@ def main(args):
 
                 # Reset monitoring variables:
                 d_running_loss = 0
-
                 log_steps = 0
                 start_time = time.time()
 
-        # Save DiT checkpoint:
-        if epoch % args.ckpt_every == 0 or epoch == args.epochs -1:
-            if rank == 0:
-                if args.use_ema:
-                    checkpoint = {
-                    "model": model.module.state_dict(),
-                    "d_opt": d_opt.state_dict(),
-                    "epoch":epoch+1,
-                    "args": args,
-                    "experiment_dir":experiment_dir,
-                    "train_steps": train_steps,
-                    "ema": ema.state_dict(),
-                }
-                else:
-                    checkpoint = {
+            # Save DiT checkpoint:
+            if train_steps % args.ckpt_every_step == 0 or train_steps == args.total_steps -1:
+                if rank == 0:
+                    if args.use_ema:
+                        checkpoint = {
                         "model": model.module.state_dict(),
                         "d_opt": d_opt.state_dict(),
                         "epoch":epoch+1,
                         "args": args,
                         "experiment_dir":experiment_dir,
                         "train_steps": train_steps,
+                        "ema": ema.state_dict(),
                     }
-                checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
-                os.makedirs(checkpoint_dir, exist_ok=True)
-                checkpoint_path_fin = os.path.join(checkpoint_dir, f'{epoch:07d}.pt')
-                torch.save(checkpoint, checkpoint_path_fin)
-                logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
+                    else:
+                        checkpoint = {
+                            "model": model.module.state_dict(),
+                            "d_opt": d_opt.state_dict(),
+                            "epoch":epoch+1,
+                            "args": args,
+                            "experiment_dir":experiment_dir,
+                            "train_steps": train_steps,
+                        }
+                    checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
+                    os.makedirs(checkpoint_dir, exist_ok=True)
+                    checkpoint_path_fin = os.path.join(checkpoint_dir, f'{train_steps:08d}.pt')
+                    torch.save(checkpoint, checkpoint_path_fin)
+                    logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
+            
+            if train_steps >= args.total_steps:
+                logger.info("Done!")
+                cleanup()
+            
             dist.barrier()
-
-    logger.info("Done!")
-    cleanup()
-
-def str2bool(v):
-    if isinstance(v, bool):
-       return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -325,14 +313,13 @@ if __name__ == "__main__":
     parser.add_argument("--results-dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-B/4")
     parser.add_argument("--image-size", type=int, choices=[128, 224, 256, 512], default=256)
-    parser.add_argument("--epochs", type=int, default=1200)
+    parser.add_argument("--total_steps", type=int, default=50000)
     parser.add_argument("--global-batch-size", type=int, default=256)
     parser.add_argument("--global-seed", type=int, default=0)
-    parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
+    parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema") 
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--log_every", type=int, default=5)
-    parser.add_argument("--ckpt_every", type=int, default=20)
-    parser.add_argument("--tau", type=float, default=0.9)
+    parser.add_argument("--log_every", type=int, default=20)
+    parser.add_argument("--ckpt_every_step", type=int, default=10000)
     parser.add_argument("--num_sampling_steps", type=int, default=1000)
     parser.add_argument('--use_ema', type=str2bool, default=True)
     parser.add_argument(

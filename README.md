@@ -8,8 +8,8 @@ conda env create -f environment.yml
 conda activate DiT
 ```
 
-### Train baseline and sample images for fid, kid calculation:
-GPU: 4 20G GPUs
+### Train baseline DiT:
+GPU: Nvidia A4500 10G * 4
 example: use DiT_Uncondition-B/4 backbone and ffhq1k dataset
 ```bash
 torchrun --nnodes=1 --nproc_per_node=4 src/train_baseline_dit.py --model DiT_Uncondition-B/4 --data_path dataset/images/ffhq1k --epochs 15000 --ckpt_every 500 --image-size 256 --global-batch-size 276
