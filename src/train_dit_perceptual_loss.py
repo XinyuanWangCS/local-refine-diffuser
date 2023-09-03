@@ -273,7 +273,6 @@ def main(args):
         logger.info(f"Beginning epoch {epoch}...")
         for x, _ in loader:
             x = x.to(device)
-
             # train diffusion model 
             with torch.no_grad():
                 # Map input images to latent space + normalize latents:
@@ -331,6 +330,7 @@ def main(args):
                 start_time = time.time()
 
             # Save DiT checkpoint:
+            
             if train_steps % args.ckpt_every_step == 0 or train_steps == args.total_steps -1 or train_steps==1:
                 if rank == 0:
                     if args.use_ema:
