@@ -20,28 +20,15 @@ torchrun --nnodes=1 --nproc_per_node=4 src/train_baseline_dit.py --model DiT_Unc
 torchrun --nnodes=1 --nproc_per_node=4 src/train_dit_perceptual_loss.py --model DiT_Uncondition-B/4 --data_path dataset/ffhq256 --image-size 256 --total_steps 500000 --ckpt_every_step 10000  --global-batch-size 128 --use_ema True --perceptual_encoder resnet --encoder_ckpt encoder_ckpts/resnet00000030.pt
 ```
 
-### Train DiT with ResNet50 encoder perceptual loss:
-```bash
-!torchrun --nnodes=1 --nproc_per_node=4 src/train_with_resnet.py --model DiT_Uncondition-S/4 --data_path dataset/images/lfw_funneled --epochs 200 --ckpt_every 10 --image-size 256 --global-batch-size 24
-```
 ### Sample images for fid evaluation:
 ```bash
-torchrun --nnodes=1 --nproc_per_node=4 src/fid_sample.py --experiment_dir results/baseline-001-ffhq1k--DiT_Uncondition-S-4 --model DiT_Uncondition-S/4 --fid_samples 3000 --image-size 256 --global-batch-size 128 --num_sampling_steps 1000
+torchrun --nnodes=1 --nproc_per_node=4 src/fid_sample.py --experiment_dir results/baseline-001-ffhq1k--DiT_Uncondition-S-4 --model DiT_Uncondition-S/4 --fid_samples 3000 --image-size 256 --global-batch-size 128 --num_sampling_steps 1000 --use_ema True
+```
 
-```
-### sample 64 images with fixed seed
-```bash
-torchrun --nnodes=1 --nproc_per_node=8 src/fid_sample.py --save_dir examples  --experiment_dir results/baseline-ffhq5k-000--DiT_Uncondition-S-4 --model DiT_Uncondition-S/4 --fid_samples 64 --image-size 256 --global-batch-size 64 --num_sampling_steps 1000
-```
 ### Evaluate trained checkpoins:
 example: the trained example above and lfw dataset
 ```bash
 python src/eval.py --experiment_dir results/test --train_set_dir dataset/images/ffhq1k --folder_name fid_samples --file_name 'eval_scores.xlsx' --cal_kid False
-```
-
-### Draw fid, kid plot
-```bash
-python src/utils/draw.py --experiment_dir results/baseline-ffhq3k-000-DiT_Uncondition-S-4/
 ```
 
 ### Draw examples
