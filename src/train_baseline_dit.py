@@ -170,6 +170,8 @@ def main(args):
     exp_name = args.experiment_name
     if not args.resume:
         if rank == 0:
+            if args.data_path.endswith('/'):
+                args.data_path = args.data_path[:-1]
             dataset_name = args.data_path.split('/')[-1]
             experiment_index = len(glob(f"{args.results_dir}/{exp_name}-{dataset_name}*"))
             model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
