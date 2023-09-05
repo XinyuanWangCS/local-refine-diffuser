@@ -17,7 +17,7 @@ torchrun --nnodes=1 --nproc_per_node=4 src/train_baseline_dit.py --model DiT_Unc
 
 ### Train DiT with ResNet perceptual loss:
 ```bash
-torchrun --nnodes=1 --nproc_per_node=4 src/train_dit_perceptual_loss.py --model DiT_Uncondition-B/4 --data_path dataset/ffhq256 --image-size 256 --total_steps 500000 --ckpt_every_step 10000  --global-batch-size 128 --use_ema True --perceptual_encoder resnet --encoder_ckpt encoder_ckpts/resnet00000030.pt
+torchrun --nnodes=1 --nproc_per_node=8 src/train_dit_perceptual_loss.py --model DiT_Uncondition-B/4 --data_path datasets/celebahq256old/  --image-size 256 --total_steps 233770 --ckpt_every_step 11500 --global-batch-size 128 --use_ema True --perceptual_encoder resnet --encoder_ckpt encoder_ckpts/resnet00000070.pt --resume pretrained_models/DiT-B-4-celebahqold256/0001500.pt --alpha 2
 ```
 
 ### Sample images for fid evaluation:

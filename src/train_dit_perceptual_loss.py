@@ -153,6 +153,8 @@ def main(args):
     # Setup an experiment folder:
     exp_name = args.experiment_name
     if rank == 0:
+        if args.data_path.endswith('/'):
+            args.data_path = args.data_path[:-1]
         dataset_name = args.data_path.split('/')[-1]
         experiment_index = len(glob(f"{args.results_dir}/{exp_name}-{dataset_name}*"))
         model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
@@ -287,7 +289,8 @@ def main(args):
             
             percept_loss = ((feature_pred_xt - feature_gt_xt)**2).mean()
             
-            loss = tau * dm_loss + (1-tau) * percept_loss
+            #loss = tau * dm_loss + (1-tau) * percept_loss
+            loss = dm_loss + args.alpha * percept_loss
             d_opt.zero_grad()
             loss.backward()
             d_opt.step()
@@ -398,6 +401,7 @@ if __name__ == "__main__":
     )
     
     parser.add_argument("--tau", type=float, default=0.9)
+    parser.add_argument("--alpha", type=float, default=0.2)
     parser.add_argument("--perceptual_encoder", type=str, default="resnet", choices=['mlpmixer', 'biggan', 'resnet'])
     parser.add_argument(
         "--encoder_ckpt",
