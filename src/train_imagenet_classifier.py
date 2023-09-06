@@ -337,7 +337,7 @@ def main(args):
             logger.info(f"Test epoch: {epoch}  Test Accuracy: {(test_correct/test_total):.4f} Test Loss: {(test_loss/test_total):.4f}")
             
     logger.info("Done!")
-    cleanup()
+    #cleanup()
 
 
 if __name__ == "__main__":
