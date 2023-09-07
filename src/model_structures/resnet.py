@@ -1,6 +1,38 @@
 import torch.nn as nn
 import torchvision.models as models
 
+def extract_resnet_perceptual_outputs_v1(model, x):
+    x = model(x)
+    return [x]
+
+def extract_resnet_perceptual_outputs_v1(model, x):
+    layer_outputs = []
+
+    # conv1
+    x = model.resnet.conv1(x)
+    x = model.resnet.bn1(x)
+    x = model.resnet.relu(x)
+    x = model.resnet.maxpool(x)
+    layer_outputs.append(x)
+    
+    # layer1
+    x = model.resnet.layer1(x)
+    layer_outputs.append(x)
+
+    # layer2
+    x = model.resnet.layer2(x)
+    layer_outputs.append(x)
+
+    # layer3
+    x = model.resnet.layer3(x)
+    layer_outputs.append(x)
+
+    # layer4
+    x = model.resnet.layer4(x)
+    layer_outputs.append(x)
+
+    return layer_outputs
+
 class ResNet(nn.Module):
     def __init__(self, resolution=32,  num_classes=1000):
         super(ResNet, self).__init__()

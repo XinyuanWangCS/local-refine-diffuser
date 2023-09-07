@@ -147,6 +147,7 @@ def main(args):
             model.load_state_dict(checkpoint["model"])
             print("=> loaded checkpoint '{}' (epoch {})".format(
                     args.resume, checkpoint["epoch"]))
+        ema.load_state_dict(checkpoint["ema"])
         experiment_dir = checkpoint["experiment_dir"]
         train_steps = checkpoint["train_steps"]
         logger = create_logger(experiment_dir)

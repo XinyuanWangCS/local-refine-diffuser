@@ -34,7 +34,7 @@ from model_structures.model_uncondition import DiT_Uncondition_models
 
 from model_structures.mlp_mixer import MLPMixerClassifier
 from model_structures.biggan_classifier import BigGANClassifier
-from model_structures.resnet import ResNet
+from model_structures.resnet import ResNet, extract_resnet_perceptual_outputs_v1
 from copy import deepcopy
 
 #################################################################################
@@ -186,6 +186,7 @@ def main(args):
         else:
             model.load_state_dict(checkpoint["model"])
             logger.info(f"=> loaded non-ema checkpoint {args.resume}")
+        ema.load_state_dict(checkpoint["ema"])
         del checkpoint
         
     encoder_ckpt = None
@@ -229,7 +230,8 @@ def main(args):
     model = DDP(model.to(device), device_ids=[rank]) # DataParrallel
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
     d_opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
-        
+    mse_loss = nn.MSELoss()
+    
     diffusion = create_diffusion(str(args.num_sampling_steps))  # default: 1000 steps, linear noise schedule
 
     # Setup data:
@@ -284,10 +286,15 @@ def main(args):
             pred_xt, gt_xt = loss_dict["pred_xt"], loss_dict["gt_xt"]
             dm_loss = loss_dict["loss"].mean()
             with torch.no_grad():
-                feature_pred_xt = encoder(pred_xt)
-                feature_gt_xt = encoder(gt_xt)
+                feature_pred_xt = extract_resnet_perceptual_outputs_v1(encoder, pred_xt)
+                feature_gt_xt = extract_resnet_perceptual_outputs_v1(encoder, gt_xt)
             
-            percept_loss = ((feature_pred_xt - feature_gt_xt)**2).mean()
+            percept_losses = []
+            for fr, fg in zip(feature_pred_xt, feature_gt_xt):
+                loss = mse_loss(fr, fg)
+                percept_losses.append(loss)
+            percept_loss = torch.stack(percept_losses).mean()
+            #percept_loss = ((feature_pred_xt - feature_gt_xt)**2).mean()
             
             #loss = tau * dm_loss + (1-tau) * percept_loss
             loss = dm_loss + args.alpha * percept_loss

@@ -164,26 +164,28 @@ def main(args):
                      ckpt["epoch"]))
         
         del ckpt
+        ckpt = None
         time.sleep(1)
         model = DDP(model, device_ids=[rank]) 
         model.eval()
 
         ckpt_name = checkpoint.split('.')[0]
         with torch.no_grad():
-            generate_samples(ckpt_str = ckpt_name,
-                                fid_dir = fid_samples_dir,
-                                model=model, 
-                                diffuser=diffusion, 
-                                vae=vae, 
-                                rank=rank, 
-                                device=device, 
-                                latent_size=latent_size,
-                                num_samples=args.fid_samples, 
-                                n=batch_size,
-                                seed=seed)
+            generate_samples(
+                ckpt_str = ckpt_name,
+                fid_dir = fid_samples_dir,
+                model=model, 
+                diffuser=diffusion, 
+                vae=vae, 
+                rank=rank, 
+                device=device, 
+                latent_size=latent_size,
+                num_samples=args.fid_samples, 
+                n=batch_size,
+                seed=seed)
         if rank == 0:    
             print(f"Saved {args.fid_samples} images for {ckpt_name}th epoch")
-        
+        del model
         dist.barrier()
         
         
