@@ -28,12 +28,12 @@ torchrun --nnodes=1 --nproc_per_node=4 src/fid_sample.py --experiment_dir result
 ### Evaluate trained checkpoins:
 example: the trained example above and lfw dataset
 ```bash
-python src/eval.py --experiment_dir results/test --train_set_dir dataset/images/ffhq1k --folder_name fid_samples --file_name 'eval_scores.xlsx' --cal_kid False
+python src/eval.py --experiment_dir results/test --train_set_dir datasets/images/ffhq1k --folder_name fid_samples --file_name 'eval_scores.xlsx' --cal_kid False
 ```
 
 ### Draw examples
 ```bash
-python src/utils/draw_examples.py --experiment_dir results/baseline-ffhq5k-000--DiT_Uncondition-S-4/examples/ --image_num 8 --target_dir results/baseline-ffhq5k-000--DiT_Uncondition-S-4/plot_examples
+python src/utils/draw_examples.py --experiment_dir results/baseline-ffhq5k-000--DiT_Uncondition-S-4/ --image_num 12 --target_dir results/baseline-ffhq5k-000--DiT_Uncondition-S-4/plot_examples
 ```
 ### Train ImageNet Classifier for perceptual loss
 ```bash
