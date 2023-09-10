@@ -143,10 +143,10 @@ def main(args):
     model = DiT_Uncondition_models[args.model]( 
         input_size=latent_size
     )
-    if args.use_ema:
-        ema = deepcopy(model).to(device)
-        requires_grad(ema, False)
-        ema.eval()
+
+    ema = deepcopy(model).to(device)
+    requires_grad(ema, False)
+    ema.eval()
     
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     
@@ -187,6 +187,8 @@ def main(args):
             model.load_state_dict(checkpoint["model"])
             logger.info(f"=> loaded non-ema checkpoint {args.resume}")
         ema.load_state_dict(checkpoint["ema"])
+        requires_grad(ema, False)
+        ema.eval()
         del checkpoint
         
     encoder_ckpt = None
@@ -283,7 +285,7 @@ def main(args):
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
             t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
             loss_dict = diffusion.training_losses_step_output(model, x, t)
-            pred_xt, gt_xt = loss_dict["pred_xt"], loss_dict["gt_xt"]
+            pred_xt, gt_xt = loss_dict["pred_e"], loss_dict["gt_e"] #TODO pred_xt, gt_xt
             dm_loss = loss_dict["loss"].mean()
             with torch.no_grad():
                 feature_pred_xt = extract_resnet_perceptual_outputs_v1(encoder, pred_xt)
@@ -329,7 +331,7 @@ def main(args):
                 dist.all_reduce(p_avg_loss, op=dist.ReduceOp.SUM)
                 p_avg_loss = p_avg_loss.item() / dist.get_world_size()
 
-                logger.info(f"(step={train_steps:07d}) Loss: {avg_loss:.4f} D_Loss: {d_avg_loss:.4f}, P_Loss: {p_avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+                logger.info(f"(step={train_steps:07d}) Loss: {avg_loss:.4f} D_Loss: {d_avg_loss:.4f}, P_Loss: {args.alpha * p_avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
 
                 # Reset monitoring variables:
                 running_loss = 0

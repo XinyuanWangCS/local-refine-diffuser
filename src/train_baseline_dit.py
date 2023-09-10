@@ -64,6 +64,8 @@ def create_logger(logging_dir):
     """
     Create a logger that writes to a log file and stdout.
     """
+    if not os.path.exists(logging_dir):
+        os.makedirs(logging_dir)
     if dist.get_rank() == 0:  # real logger: 只有排名为0的进程执行logging
         logging.basicConfig(
             level=logging.INFO, # 记录级别为INFO
