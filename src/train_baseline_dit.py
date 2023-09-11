@@ -307,7 +307,6 @@ def main(args):
             
             if train_steps >= args.total_steps:
                 logger.info("Done!")
-                cleanup()
             
         dist.barrier()
     

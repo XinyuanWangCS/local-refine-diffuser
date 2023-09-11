@@ -860,9 +860,9 @@ class GaussianDiffusion:
         else:
             raise NotImplementedError(self.loss_type)
 
-        terms['pred_e'] = model_output
+        terms['pred_e'] = model_output 
         terms['gt_e'] = target
-        terms['pred_xt'] = self.q_sample(x_start=x_start, t=t, noise=model_output)
+        terms['pred_xt'] = self.q_sample(x_start=x_start, t=t, noise=model_output) #q(x_t | x_0, e_t, t)
         terms['gt_xt'] = self.q_sample(x_start=x_start, t=t, noise=target)
         return terms
     

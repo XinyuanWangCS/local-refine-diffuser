@@ -285,7 +285,7 @@ def main(args):
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
             t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
             loss_dict = diffusion.training_losses_step_output(model, x, t)
-            pred_xt, gt_xt = loss_dict["pred_e"], loss_dict["gt_e"] #TODO pred_xt, gt_xt
+            pred_xt, gt_xt = loss_dict["pred_xt"], loss_dict["gt_xt"] #TODO pred_xt, gt_xt
             dm_loss = loss_dict["loss"].mean()
             with torch.no_grad():
                 feature_pred_xt = extract_resnet_perceptual_outputs_v1(encoder, pred_xt)
