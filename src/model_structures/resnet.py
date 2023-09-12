@@ -1,7 +1,7 @@
 import torch.nn as nn
 import torchvision.models as models
 
-def extract_resnet_perceptual_outputs_v1(model, x):
+def extract_resnet_perceptual_outputs_v0(model, x):
     x = model(x)
     return [x]
 

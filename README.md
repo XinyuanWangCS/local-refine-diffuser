@@ -25,7 +25,7 @@ torchrun --nnodes=1 --nproc_per_node=8 src/train_dit_perceptual_loss.py --model 
 
 ### Sample images for fid evaluation:
 ```bash
-torchrun --nnodes=1 --nproc_per_node=4 src/fid_sample.py --experiment_dir results/baseline-001-ffhq1k--DiT_Uncondition-S-4 --model DiT_Uncondition-S/4 --fid_samples 3000 --image-size 256 --global-batch-size 128 --num_sampling_steps 1000 --use_ema True
+torchrun --nnodes=1 --nproc_per_node=4 src/fid_sample.py --experiment_dir results/perceptual-celebahq256old-001-DiT_Uncondition-B-4 --model DiT_Uncondition-B/4 --fid_samples 5000 --image-size 256 --global-batch-size 128 --num_sampling_steps 1000 --use_ema True
 ```
 
 ### Evaluate trained checkpoins:

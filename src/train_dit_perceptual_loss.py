@@ -34,7 +34,7 @@ from model_structures.model_uncondition import DiT_Uncondition_models
 
 from model_structures.mlp_mixer import MLPMixerClassifier
 from model_structures.biggan_classifier import BigGANClassifier
-from model_structures.resnet import ResNet, extract_resnet_perceptual_outputs_v1
+from model_structures.resnet import *
 from copy import deepcopy
 
 #################################################################################
@@ -143,12 +143,40 @@ def main(args):
     model = DiT_Uncondition_models[args.model]( 
         input_size=latent_size
     )
-
+    
     ema = deepcopy(model).to(device)
     requires_grad(ema, False)
     ema.eval()
     
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
+    
+    # Resume training: continue ckpt args.resume
+    if args.resume:
+        if not os.path.isfile(args.resume):
+            raise ValueError(f'checkpoint dir not exist: {args.resume}')
+        
+        print("=> loading checkpoint '{}'".format(args.resume))
+        checkpoint = torch.load(args.resume, map_location=torch.device(f'cuda:{device}'))
+
+        if args.use_ema:
+            model.load_state_dict(checkpoint["ema"])
+            print(f"=> loaded ema checkpoint {args.resume}")
+        else:
+            model.load_state_dict(checkpoint["model"])
+            print(f"=> loaded non-ema checkpoint {args.resume}")
+        
+        ema.load_state_dict(checkpoint["ema"])
+    
+    # DataParrallel
+    model = DDP(model.to(device), device_ids=[rank]) 
+    
+    # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
+    d_opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
+    if args.resume:
+        d_opt.load_state_dict(checkpoint["d_opt"])
+        del checkpoint 
+        time.sleep(1)
+    diffusion = create_diffusion(str(args.num_sampling_steps))  # default: 1000 steps, linear noise schedule
     
     # Setup an experiment folder:
     exp_name = args.experiment_name
@@ -172,25 +200,7 @@ def main(args):
         logger.info('------------------------------------------')
     else:
         logger = create_logger(None)
-        
-    # Resume training: continue ckpt args.resume
-    if args.resume:
-        if not os.path.isfile(args.resume):
-            raise ValueError(f'checkpoint dir not exist: {args.resume}')
-        
-        checkpoint = torch.load(args.resume, map_location=torch.device(f'cuda:{device}'))
-
-        if args.use_ema:
-            model.load_state_dict(checkpoint["ema"])
-            logger.info(f"=> loaded ema checkpoint {args.resume}")
-        else:
-            model.load_state_dict(checkpoint["model"])
-            logger.info(f"=> loaded non-ema checkpoint {args.resume}")
-        ema.load_state_dict(checkpoint["ema"])
-        requires_grad(ema, False)
-        ema.eval()
-        del checkpoint
-        
+    
     encoder_ckpt = None
     if args.encoder_ckpt:
         if not os.path.isfile(args.encoder_ckpt):
@@ -226,16 +236,10 @@ def main(args):
     else:
         raise ValueError(f'{args.encoder} is not supported.')
     del encoder_ckpt
+    time.sleep(1)
     requires_grad(encoder, False)
     encoder.eval()
     
-    model = DDP(model.to(device), device_ids=[rank]) # DataParrallel
-    # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
-    d_opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
-    mse_loss = nn.MSELoss()
-    
-    diffusion = create_diffusion(str(args.num_sampling_steps))  # default: 1000 steps, linear noise schedule
-
     # Setup data:
     transform = transforms.Compose([
         transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)),
@@ -264,7 +268,7 @@ def main(args):
     )
     logger.info(f"Dataset contains {len(dataset):,} images ({args.data_path})")
 
-    tau = args.tau
+    mse_loss = nn.MSELoss()
     # Variables for monitoring/logging purposes:
     log_steps = 0
     d_running_loss = 0
@@ -283,13 +287,13 @@ def main(args):
             with torch.no_grad():
                 # Map input images to latent space + normalize latents:
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
-            t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
+            t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device) #TODO 
             loss_dict = diffusion.training_losses_step_output(model, x, t)
-            pred_xt, gt_xt = loss_dict["pred_xt"], loss_dict["gt_xt"] #TODO pred_xt, gt_xt
+            pred, gt = loss_dict["pred"], loss_dict["gt"] #TODO pred_xt, gt_xt
             dm_loss = loss_dict["loss"].mean()
             with torch.no_grad():
-                feature_pred_xt = extract_resnet_perceptual_outputs_v1(encoder, pred_xt)
-                feature_gt_xt = extract_resnet_perceptual_outputs_v1(encoder, gt_xt)
+                feature_pred_xt = extract_resnet_perceptual_outputs_v0(encoder, pred)
+                feature_gt_xt = extract_resnet_perceptual_outputs_v0(encoder, gt)
             
             percept_losses = []
             for fr, fg in zip(feature_pred_xt, feature_gt_xt):
@@ -345,8 +349,7 @@ def main(args):
             
             if train_steps % args.ckpt_every_step == 0 or train_steps == args.total_steps -1 or train_steps==1:
                 if rank == 0:
-                    if args.use_ema:
-                        checkpoint = {
+                    checkpoint = {
                         "model": model.module.state_dict(),
                         "d_opt": d_opt.state_dict(),
                         "epoch":epoch+1,
@@ -355,15 +358,7 @@ def main(args):
                         "train_steps": train_steps,
                         "ema": ema.state_dict(),
                     }
-                    else:
-                        checkpoint = {
-                            "model": model.module.state_dict(),
-                            "d_opt": d_opt.state_dict(),
-                            "epoch":epoch+1,
-                            "args": args,
-                            "experiment_dir":experiment_dir,
-                            "train_steps": train_steps,
-                        }
+                    
                     checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
                     os.makedirs(checkpoint_dir, exist_ok=True)
                     checkpoint_path_fin = os.path.join(checkpoint_dir, f'{train_steps:08d}.pt')
@@ -372,7 +367,7 @@ def main(args):
             
             if train_steps >= args.total_steps:
                 logger.info("Done!")
-                cleanup()
+                #cleanup()
             
         dist.barrier()
 

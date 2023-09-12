@@ -125,10 +125,10 @@ def main(args):
     model = DiT_Uncondition_models[args.model]( 
         input_size=latent_size
     )
-    if args.use_ema:
-        ema = deepcopy(model).to(device)
-        requires_grad(ema, False)
-        ema.eval()
+
+    ema = deepcopy(model).to(device)
+    requires_grad(ema, False)
+    ema.eval()
     
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
     
