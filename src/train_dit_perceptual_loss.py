@@ -288,19 +288,19 @@ def main(args):
                 # Map input images to latent space + normalize latents:
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
             t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device) #TODO 
-            loss_dict = diffusion.training_losses_step_output(model, x, t)
+            loss_dict = diffusion.training_losses_step_output_v1(model, x, t)
             pred, gt = loss_dict["pred"], loss_dict["gt"] #TODO pred_xt, gt_xt
             dm_loss = loss_dict["loss"].mean()
             with torch.no_grad():
-                feature_pred_xt = extract_resnet_perceptual_outputs_v0(encoder, pred)
-                feature_gt_xt = extract_resnet_perceptual_outputs_v0(encoder, gt)
+                feature_pred_xt = encoder(pred)#extract_resnet_perceptual_outputs_v0(encoder, pred)
+                feature_gt_xt = encoder(gt)#extract_resnet_perceptual_outputs_v0(encoder, gt)
             
-            percept_losses = []
+            '''percept_losses = []
             for fr, fg in zip(feature_pred_xt, feature_gt_xt):
                 loss = mse_loss(fr, fg)
                 percept_losses.append(loss)
-            percept_loss = torch.stack(percept_losses).mean()
-            #percept_loss = ((feature_pred_xt - feature_gt_xt)**2).mean()
+            percept_loss = torch.stack(percept_losses).mean()'''
+            percept_loss = ((feature_pred_xt - feature_gt_xt)**2).mean()
             
             #loss = tau * dm_loss + (1-tau) * percept_loss
             loss = dm_loss + args.alpha * percept_loss
