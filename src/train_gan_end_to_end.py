@@ -31,10 +31,7 @@ import os
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 from model_structures.model_uncondition import DiT_Uncondition_models
-
-from model_structures.mlp_mixer import MLPMixerClassifier
-from model_structures.biggan_classifier import BigGANClassifier
-from model_structures.resnet import *
+from model_structures.resnet import ResNet
 from copy import deepcopy
 
 #################################################################################
@@ -81,9 +78,9 @@ def create_logger(logging_dir):
     """
     Create a logger that writes to a log file and stdout.
     """
-    if dist.get_rank() == 0:  # real logger: 只有排名为0的进程执行logging
+    if dist.get_rank() == 0:
         logging.basicConfig(
-            level=logging.INFO, # 记录级别为INFO
+            level=logging.INFO, 
             format='[\033[34m%(asctime)s\033[0m] %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S',
             handlers=[logging.StreamHandler(), logging.FileHandler(f"{logging_dir}/log.txt")]
@@ -209,14 +206,7 @@ def main(args):
         if rank==0:
             logger.info("=> load encoder checkpoint '{}'".format(args.encoder_ckpt))
     
-    if args.perceptual_encoder == 'biggan':
-        encoder = BigGANClassifier(in_channels=4, resolution=latent_size, output_dim=1000).to(device)
-        if args.encoder_ckpt:
-            encoder.load_state_dict(encoder_ckpt['model'])
-            if rank==0:
-                logger.info("=> load encoder state_dict")
-        encoder = encoder.encoder
-    elif args.perceptual_encoder == 'mlpmixer':
+    if args.perceptual_encoder == 'mlpmixer':
         encoder = MLPMixerClassifier(in_channels=4, image_size=latent_size, patch_size=4, num_classes=1000,
                  dim=768, depth=12, token_dim=196, channel_dim=1024).to(device)
         if args.encoder_ckpt:
@@ -284,9 +274,9 @@ def main(args):
             with torch.no_grad():
                 # Map input images to latent space + normalize latents:
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
-            t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device) 
-            loss_dict = diffusion.training_losses_step_output_v1(model, x, t)
-            pred, gt = loss_dict["pred"], loss_dict["gt"] #TODO pred_xt, gt_xt
+            t = args.start_step
+            loss_dict = diffusion.training_losses_end_to_end(model, x, t, device)
+            pred, gt = loss_dict["pred_x0"], x #TODO pred_xt, gt_xt
             dm_loss = loss_dict["loss"].mean()
             with torch.no_grad():
                 feature_pred_xt = encoder(pred)#extract_resnet_perceptual_outputs_v0(encoder, pred)
@@ -294,7 +284,6 @@ def main(args):
             
             percept_loss = ((feature_pred_xt - feature_gt_xt)**2).mean()
             
-            #loss = tau * dm_loss + (1-tau) * percept_loss
             loss = dm_loss + args.alpha * percept_loss
             d_opt.zero_grad()
             loss.backward()
@@ -363,7 +352,7 @@ def main(args):
         if train_steps >= args.total_steps:
                 logger.info("Done!")
                 break
-            
+        
         dist.barrier()
 
 
@@ -383,6 +372,7 @@ if __name__ == "__main__":
     parser.add_argument("--log_every", type=int, default=20)
     parser.add_argument("--ckpt_every_step", type=int, default=10000)
     parser.add_argument("--num_sampling_steps", type=int, default=1000)
+    parser.add_argument("--start_step", type=int, default=10)
     parser.add_argument('--use_ema', type=str2bool, default=True)
     parser.add_argument(
         "--resume",
@@ -399,7 +389,6 @@ if __name__ == "__main__":
         help="manual epoch number (useful on restarts)",
     )
     
-    parser.add_argument("--tau", type=float, default=0.9)
     parser.add_argument("--alpha", type=float, default=0.2)
     parser.add_argument("--perceptual_encoder", type=str, default="resnet", choices=['mlpmixer', 'biggan', 'resnet'])
     parser.add_argument(

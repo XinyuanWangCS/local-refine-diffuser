@@ -58,7 +58,7 @@ def cleanup():
 #                          Sample images for FID                                #
 #################################################################################
 
-def generate_samples(ckpt_str, fid_dir, model, diffuser, vae, rank, device, seed, latent_size=32, num_samples=1000, n=16):
+def generate_samples(ckpt_str, fid_dir, model, diffuser, vae, rank, device, seed, end_step, latent_size=32, num_samples=1000, n=16):
     # Create random noise for input
     global_batch_size = n * dist.get_world_size()
     
@@ -86,7 +86,7 @@ def generate_samples(ckpt_str, fid_dir, model, diffuser, vae, rank, device, seed
             seed_count += 1
             z = torch.randn((n, 4, latent_size, latent_size)).to(device)
             samples = diffuser.p_sample_loop(
-                model.forward, z.shape, z, clip_denoised = False, device = device
+                model.forward, z.shape, z, end_step=end_step, clip_denoised = False, device = device
             )
             
             samples = vae.decode(samples / 0.18215).sample
@@ -165,7 +165,6 @@ def main(args):
         
         del ckpt
         ckpt = None
-        time.sleep(1)
         model = DDP(model, device_ids=[rank]) 
         model.eval()
 
@@ -180,6 +179,7 @@ def main(args):
                 rank=rank, 
                 device=device, 
                 latent_size=latent_size,
+                end_step = args.end_step,
                 num_samples=args.fid_samples, 
                 n=batch_size,
                 seed=seed)
@@ -203,6 +203,7 @@ if __name__ == "__main__":
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--fid_samples", type=int, default=6000)
     parser.add_argument("--num_sampling_steps", type=int, default=1000)
+    parser.add_argument("--end_step", type=int, default=0)
     parser.add_argument('--use_ema', type=str2bool, default=False)
     args = parser.parse_args()
     main(args)

@@ -5,7 +5,7 @@
 
 
 import math
-
+import torch
 import numpy as np
 import torch as th
 import enum
@@ -420,6 +420,7 @@ class GaussianDiffusion:
         self,
         model,
         shape,
+        end_step = 0,
         noise=None,
         clip_denoised=True,
         denoised_fn=None,
@@ -450,6 +451,7 @@ class GaussianDiffusion:
         for sample in self.p_sample_loop_progressive(
             model,
             shape,
+            end_step=end_step,
             noise=noise,
             clip_denoised=clip_denoised,
             denoised_fn=denoised_fn,
@@ -465,6 +467,7 @@ class GaussianDiffusion:
         self,
         model,
         shape,
+        end_step,
         noise=None,
         clip_denoised=True,
         denoised_fn=None,
@@ -487,7 +490,7 @@ class GaussianDiffusion:
             img = noise
         else:
             img = th.randn(*shape, device=device)
-        indices = list(range(self.num_timesteps))[::-1]
+        indices = list(range(end_step, self.num_timesteps))[::-1]
 
         if progress:
             # Lazy import so that we don't depend on tqdm.
@@ -712,6 +715,114 @@ class GaussianDiffusion:
         output = th.where((t == 0), decoder_nll, kl)
         return {"output": output, "pred_xstart": out["pred_xstart"]}
 
+    def training_losses_end_to_end_step(self, model, x_start, x_t, t, model_kwargs=None, noise=None):
+        if model_kwargs is None:
+            model_kwargs = {}
+        if noise is None: # sample noise_t
+            noise = th.randn_like(x_start)
+
+        terms = {}
+
+        if self.loss_type == LossType.KL or self.loss_type == LossType.RESCALED_KL:
+            terms["loss"] = self._vb_terms_bpd(
+                model=model,
+                x_start=x_start,
+                x_t=x_t,
+                t=t,
+                clip_denoised=False,
+                model_kwargs=model_kwargs,
+            )["output"]
+            if self.loss_type == LossType.RESCALED_KL:
+                terms["loss"] *= self.num_timesteps
+        elif self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
+            model_output = model(x_t, t, **model_kwargs)
+
+            if self.model_var_type in [
+                ModelVarType.LEARNED,
+                ModelVarType.LEARNED_RANGE,
+            ]:
+                B, C = x_t.shape[:2]
+                assert model_output.shape == (B, C * 2, *x_t.shape[2:])
+                model_output, model_var_values = th.split(model_output, C, dim=1)
+                # Learn the variance using the variational bound, but don't let
+                # it affect our mean prediction.
+                frozen_out = th.cat([model_output.detach(), model_var_values], dim=1)
+                terms["vb"] = self._vb_terms_bpd(
+                    model=lambda *args, 
+                    r=frozen_out: r,
+                    x_start=x_start,
+                    x_t=x_t,
+                    t=t,
+                    clip_denoised=False,
+                )["output"]
+                if self.loss_type == LossType.RESCALED_MSE:
+                    # Divide by 1000 for equivalence with initial implementation.
+                    # Without a factor of 1/1000, the VB term hurts the MSE term.
+                    terms["vb"] *= self.num_timesteps / 1000.0
+
+            targets = {
+                ModelMeanType.PREVIOUS_X: self.q_posterior_mean_variance( # q(x_{t-1} | x_t, x_0)
+                    x_start=x_start, x_t=x_t, t=t
+                )[0],
+                ModelMeanType.START_X: x_start,
+                ModelMeanType.EPSILON: noise,
+            }
+            
+            target = targets[self.model_mean_type]
+            assert model_output.shape == target.shape == x_start.shape
+            terms["mse"] = mean_flat((target - model_output) ** 2)
+            if "vb" in terms:
+                terms["loss"] = terms["mse"] + terms["vb"]
+            else:
+                terms["loss"] = terms["mse"]
+        else:
+            raise NotImplementedError(self.loss_type)
+        
+        terms['x_t-1'] = targets[ModelMeanType.PREVIOUS_X]
+        
+        return terms
+    
+    def training_losses_end_to_end(self, model, x_start, t, device, model_kwargs=None, noise=None):
+        """
+        Compute training losses for a sequence of timesteps from t to 0.
+        :param model: the model to evaluate loss on.
+        :param x_start: the [N x C x ...] tensor of inputs.
+        :param t: a batch of timestep indices.
+        :param device
+        :param model_kwargs: if not None, a dict of extra keyword arguments to
+            pass to the model. This can be used for conditioning.
+        :param noise: if specified, the specific Gaussian noise to try to remove.
+        :return: a dict with the key "loss" containing a tensor of shape [N].
+                 Some mean or variance settings may also have other keys.
+        """
+        if model_kwargs is None:
+            model_kwargs = {}
+        if noise is None: # sample noise_t
+            noise = th.randn_like(x_start)
+            
+        x_t = self.q_sample(x_start, t, noise=noise) # q(x_t | x_0)
+        
+        total_timesteps = t
+        df_losses = []
+        for t_i in range(total_timesteps, 0, -1):
+            t = torch.full((x_start.shape[0],), t_i, device=device, dtype=torch.int) 
+            loss_outputs = self.training_losses_end_to_end_step(
+                model=model, 
+                x_start=x_start, 
+                x_t=x_t, 
+                t=t, 
+                model_kwargs=model_kwargs, 
+                noise=noise)
+            df_losses.append(loss_outputs['loss'].mean())
+            x_t = loss_outputs['x_t-1']
+            
+        terms = {
+            "df_losses": torch.stack(df_losses, dim=0),
+            "pred_x0": x_t
+        }
+        return terms
+    
+    
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
         """
         Compute training losses for a single timestep.

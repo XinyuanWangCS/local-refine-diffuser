@@ -15,22 +15,28 @@ torch.backends.cudnn.allow_tf32 = True
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch import nn
-import torch.nn.functional as func
 from torchvision.transforms import functional as F
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
-import numpy as np
 from tqdm import tqdm
-from collections import OrderedDict
 from PIL import Image
 import argparse
-import logging
 import os
-
+import time
 from model_structures.model_uncondition import DiT_Uncondition_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+    
 #################################################################################
 #                             Training Helper Functions                         #
 #################################################################################
@@ -52,7 +58,7 @@ def cleanup():
 #                          Sample images for FID                                #
 #################################################################################
 
-def generate_samples(ckpt_str, fid_dir, model, diffuser, vae, rank, device, latent_size=32, num_samples=1000, n=16):
+def generate_samples(ckpt_name, save_dir, model, diffuser, vae, rank, device, seed, end_step, latent_size, n, num_samples=1000):
     # Create random noise for input
     global_batch_size = n * dist.get_world_size()
     
@@ -67,34 +73,33 @@ def generate_samples(ckpt_str, fid_dir, model, diffuser, vae, rank, device, late
         print(f"Total number of images that will be sampled: {total_samples}")
         print(f'sample needed :{samples_needed_this_gpu}, iterations: {iterations}')
 
-    ckpt_fid_samples_dir = os.path.join(fid_dir, ckpt_str)
+    ckpt_fid_samples_dir = os.path.join(save_dir, ckpt_name)
     os.makedirs(ckpt_fid_samples_dir, exist_ok=True)
 
     total = 0
     pbar = range(iterations)
     pbar = tqdm(pbar) if rank == 0 else pbar
+    seed_count = 0
     with torch.no_grad():
         for _ in pbar:
+            torch.manual_seed(seed + rank + seed_count * dist.get_world_size())
+            seed_count += 1
             z = torch.randn((n, 4, latent_size, latent_size)).to(device)
             samples = diffuser.p_sample_loop(
-                model.forward, z.shape, z, clip_denoised = False, device = device
+                model.forward, z.shape, end_step=end_step, noise=z, clip_denoised = False, device = device
             )
             
             samples = vae.decode(samples / 0.18215).sample
             samples = torch.clamp(127.5 * samples + 128.0, 0, 255).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
 
             for i, img in enumerate(samples):
-                index = i * dist.get_world_size() + rank + total
+                index = i + rank * n + total
                 if index >= num_samples:
                     return
                 Image.fromarray(img).save(f'{ckpt_fid_samples_dir}/{index:07d}.png')
                 
             total += global_batch_size
 
-
-#################################################################################
-#                                  Training Loop                                #
-#################################################################################
 
 def main(args):
     """
@@ -107,7 +112,7 @@ def main(args):
     assert args.global_batch_size % dist.get_world_size() == 0, f"Batch size must be divisible by world size."
     rank = dist.get_rank()
     device = rank % torch.cuda.device_count()
-    seed = args.global_seed * dist.get_world_size() + rank
+    seed = args.global_seed #TODO
     torch.manual_seed(seed)
     torch.cuda.set_device(device)
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
@@ -116,14 +121,12 @@ def main(args):
     batch_size=int(args.global_batch_size // dist.get_world_size())
 
     # Setup an experiment folder:
-    ckpt_dir = args.experiment_dir
-    if not os.path.exists(ckpt_dir):
-        # os.makedirs(experiment_dir)
-        raise ValueError(f'Ckpt dir not exist: {ckpt_dir}')
-    result_test_path = './result_test'
-    if not os.path.exists(result_test_path):
-        os.makedirs(result_test_path)
-    
+    checkpoint_dir = args.checkpoint_dir
+    if not os.path.exists(checkpoint_dir):
+        raise ValueError(f'Experiment dir not exist: {checkpoint_dir}')
+
+    save_dir = args.save_dir
+    os.makedirs(save_dir, exist_ok=True)
 
     # Create model:
     assert args.image_size % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
@@ -134,56 +137,63 @@ def main(args):
     diffusion = create_diffusion(str(num_sampling_steps))  # default: 1000 steps, linear noise schedule
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
 
+    ckpt_name = checkpoint_dir.split('/')[-3]+"-"+checkpoint_dir.split('/')[-1].split('.')[0]
+    if rank == 0:
+        print('----------------------------------------------')
+        print(f'Sampling: {ckpt_name}')
+    model = None
+    ckpt = torch.load(checkpoint_dir, map_location=torch.device(f'cuda:{device}'))
+    model = DiT_Uncondition_models[args.model](input_size=latent_size).to(device)
     
-    # if not os.path.exists(checkpoints_dir):
-    #     raise ValueError(f'checkpoints dir not exist: {checkpoints_dir}')
-    checkpoints = sorted(os.listdir(ckpt_dir))
+    if args.use_ema:
+        model.load_state_dict(ckpt["ema"])
+        print("=> loaded ema checkpoint (epoch {})".format(
+                ckpt["epoch"]))
+    else:
+        model.load_state_dict(ckpt["model"])
+        print("=> loaded checkpoint (epoch {})".format(
+                    ckpt["epoch"]))
+    
+    del ckpt
+    ckpt = None
+    model = DDP(model, device_ids=[rank]) 
+    requires_grad(model=model, flag=False)
+    model.eval()
 
-    for checkpoint in checkpoints:
-        if rank == 0:
-            print('----------------------------------------------')
-            print(f'Sampling: {checkpoint}')
-        model = None
-        model = DiT_Uncondition_models[args.model](input_size=latent_size)
-
-        ckpt = torch.load(os.path.join(ckpt_dir, checkpoint))
-        model.load_state_dict(ckpt['model'])
-
-        model = DDP(model.to(device), device_ids=[rank]) # DataParrallel
-        model.eval()
-
-        ckpt_name = checkpoint.split('.')[0]
-        fid_samples_dir = os.path.join(result_test_path, ckpt_dir, ckpt_name+'_'+'fid_samples')
-        os.makedirs(fid_samples_dir, exist_ok=True)
+    with torch.no_grad():
+        generate_samples(
+            ckpt_name = ckpt_name,
+            save_dir = save_dir,
+            model=model, 
+            diffuser=diffusion, 
+            vae=vae, 
+            rank=rank, 
+            device=device, 
+            latent_size=latent_size,
+            end_step = args.end_step,
+            num_samples=args.fid_samples, 
+            n=batch_size,
+            seed=seed)
+    if rank == 0:    
+        print(f"Saved {args.fid_samples} images for {ckpt_name}th epoch")
+    del model
         
-        with torch.no_grad():
-            generate_samples(ckpt_str = ckpt_name,
-                                fid_dir = fid_samples_dir,
-                                model=model, 
-                                diffuser=diffusion, 
-                                vae=vae, 
-                                rank=rank, 
-                                device=device, 
-                                latent_size=latent_size,
-                                num_samples=args.fid_samples, 
-                                n=batch_size)
-        if rank == 0:    
-            print(f"Saved {args.fid_samples} images for {ckpt_name}th epoch")
         
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    #parser.add_argument("--data_path", type=str, required=True)
-    parser.add_argument("--experiment_dir", type=str, required=True)
-    parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-S/4")
+    parser.add_argument("--checkpoint_dir", type=str, required=True)
+    parser.add_argument("--save_dir", type=str, default='results/samples')
+    parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-B/4")
     parser.add_argument("--image-size", type=int, choices=[128, 224, 256, 512], default=256)
-    parser.add_argument("--global-batch-size", type=int, default=256)
+    parser.add_argument("--global-batch-size", type=int, default=128)
     parser.add_argument("--global-seed", type=int, default=0)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--fid_samples", type=int, default=6000)
-    #parser.add_argument("--example_samples", type=int, default=50)
-    parser.add_argument("--num_sampling_steps", type=int, default=250)
+    parser.add_argument("--fid_samples", type=int, default=30000)
+    parser.add_argument("--num_sampling_steps", type=int, default=1000)
+    parser.add_argument("--end_step", type=int, default=50)
+    parser.add_argument('--use_ema', type=str2bool, default=False)
     args = parser.parse_args()
     main(args)
