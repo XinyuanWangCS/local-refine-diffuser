@@ -141,7 +141,7 @@ def main(args):
     diffusion = create_diffusion(str(num_sampling_steps))  # default: 1000 steps, linear noise schedule
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
 
-    checkpoints_dir = os.path.join(experiment_dir, 'checkpoints')
+    checkpoints_dir = os.path.join(experiment_dir, 'dit_checkpoints')
     if not os.path.exists(checkpoints_dir):
         raise ValueError(f'checkpoints dir not exist: {checkpoints_dir}')
     checkpoints = sorted(os.listdir(checkpoints_dir), reverse=True)
