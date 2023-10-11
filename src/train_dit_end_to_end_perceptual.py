@@ -27,7 +27,7 @@ import time
 import argparse
 import logging
 import os
-
+from itertools import count
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 from model_structures.model_uncondition import DiT_Uncondition_models
@@ -148,6 +148,7 @@ def main(args):
     ema.eval()
     
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
+    diffusion = create_diffusion(str(args.num_sampling_steps))  # default: 1000 steps, linear noise schedule
     
     # Resume training: continue ckpt args.resume
     if args.resume:
@@ -157,7 +158,7 @@ def main(args):
         print("=> loading checkpoint '{}'".format(args.resume))
         checkpoint = torch.load(args.resume, map_location=torch.device(f'cuda:{device}'))
 
-        if args.use_ema:
+        if args.load_ema:
             model.load_state_dict(checkpoint["ema"])
             print(f"=> loaded ema checkpoint {args.resume}")
         else:
@@ -165,16 +166,13 @@ def main(args):
             print(f"=> loaded non-ema checkpoint {args.resume}")
         
         ema.load_state_dict(checkpoint["ema"])
+        del checkpoint 
     
     # DataParrallel
     model = DDP(model.to(device), device_ids=[rank]) 
     
     # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
-    d_opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
-    if args.resume:
-        d_opt.load_state_dict(checkpoint["d_opt"])
-        del checkpoint 
-    diffusion = create_diffusion(str(args.num_sampling_steps))  # default: 1000 steps, linear noise schedule
+    dif_opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
     
     # Setup an experiment folder:
     exp_name = args.experiment_name
@@ -216,17 +214,18 @@ def main(args):
             if rank==0:
                 logger.info("=> load encoder state_dict")
         encoder = encoder.mlp_mixer
+        del encoder_ckpt
     elif args.perceptual_encoder == 'resnet': #[batchsize, 2048]
         encoder = ResNet(resolution=latent_size, num_classes=1000).to(device)
         if args.encoder_ckpt:
             encoder.load_state_dict(encoder_ckpt['model'])
             if rank==0:
                 logger.info("=> load encoder state_dict")
-        encoder.resnet.avgpool = nn.Identity()
         encoder.resnet.fc = nn.Identity()
+        del encoder_ckpt
     else:
         raise ValueError(f'{args.encoder} is not supported.')
-    del encoder_ckpt
+    
     requires_grad(encoder, False)
     encoder.eval()
     
@@ -259,14 +258,37 @@ def main(args):
     logger.info(f"Dataset contains {len(dataset):,} images ({args.data_path})")
 
     # Variables for monitoring/logging purposes:
+    train_steps = 0
     log_steps = 0
-    d_running_loss = 0
-    p_running_loss = 0
+    epoch_steps = 0
     running_loss = 0
-    start_time = time.time()
+    dif_running_loss = 0
+    percept_running_loss = 0
+    epoch_loss = 0.0
+    epoch_dif_loss = 0.0
+    epoch_percept_loss = 0.0
+    percept_loss_func = nn.MSELoss()
 
     logger.info(f"Total step number: {args.total_steps}.")
-    for epoch in range(args.start_epoch, 100000):
+    if rank == 0:
+        checkpoint = {
+            "model": model.module.state_dict(),
+            "d_opt": dif_opt.state_dict(),
+            "epoch":0,
+            "args": args,
+            "experiment_dir":experiment_dir,
+            "train_steps": train_steps,
+            "ema": ema.state_dict(),
+        }
+        
+        checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        checkpoint_path_fin = os.path.join(checkpoint_dir, f'{train_steps:08d}.pt')
+        torch.save(checkpoint, checkpoint_path_fin)
+        logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
+        
+    start_time = time.time()
+    for epoch in count(args.start_epoch):
         model.train()
         sampler.set_epoch(epoch)
         logger.info(f"Beginning epoch {epoch}...")
@@ -276,30 +298,37 @@ def main(args):
             with torch.no_grad():
                 # Map input images to latent space + normalize latents:
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
-            t = args.start_step
-            loss_dict = diffusion.training_losses_end_to_end(model, x, t, device)
-            pred, gt = loss_dict["pred_x0"], x #TODO pred_xt, gt_xt
-            dm_loss = loss_dict["loss"].mean()
+                
+            t = torch.randint(0, args.start_step, (x.shape[0],), device=device)
+            loss_dict = diffusion.training_losses_step_output(model, x, t)
+            pred, gt = loss_dict["pred"], loss_dict["gt"] 
+            dif_loss = loss_dict["loss"].mean()
             with torch.no_grad():
-                feature_pred_xt = encoder(pred)#extract_resnet_perceptual_outputs_v0(encoder, pred)
-                feature_gt_xt = encoder(gt)#extract_resnet_perceptual_outputs_v0(encoder, gt)
+                feature_gt = encoder(gt)#extract_resnet_perceptual_outputs_v0(encoder, gt)
+            feature_pred = encoder(pred)#extract_resnet_perceptual_outputs_v0(encoder, pred)
+                
+            percept_loss = percept_loss_func(feature_pred, feature_gt)
             
-            percept_loss = ((feature_pred_xt - feature_gt_xt)**2).mean()
-            
-            loss = dm_loss + args.alpha * percept_loss
-            d_opt.zero_grad()
+            loss = dif_loss + args.alpha * percept_loss
+            dif_opt.zero_grad()
             loss.backward()
-            d_opt.step()
-            if args.use_ema:
-                update_ema(ema, model.module)
+            dif_opt.step()
+            
+            update_ema(ema, model.module)
             
             # Log loss values:
-            p_running_loss += percept_loss.item()
-            d_running_loss += dm_loss.item()
+            percept_running_loss += percept_loss.item()
+            dif_running_loss += dif_loss.item()
             running_loss += loss.item()
 
+            epoch_percept_loss += percept_loss.item()
+            epoch_dif_loss += dif_loss.item()
+            epoch_loss += loss.item()
+            
             log_steps += 1
             train_steps += 1
+            epoch_steps += 1
+            
             if train_steps % args.log_every == 0:
                 # Measure training speed:
                 torch.cuda.synchronize()
@@ -310,31 +339,31 @@ def main(args):
                 dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
                 avg_loss = avg_loss.item() / dist.get_world_size()
 
-                d_avg_loss = torch.tensor(d_running_loss / log_steps, device=device)
+                d_avg_loss = torch.tensor(dif_running_loss / log_steps, device=device)
                 dist.all_reduce(d_avg_loss, op=dist.ReduceOp.SUM)
                 d_avg_loss = d_avg_loss.item() / dist.get_world_size()
 
-                p_avg_loss = torch.tensor(p_running_loss / log_steps, device=device)
+                p_avg_loss = torch.tensor(percept_running_loss / log_steps, device=device)
                 dist.all_reduce(p_avg_loss, op=dist.ReduceOp.SUM)
                 p_avg_loss = p_avg_loss.item() / dist.get_world_size()
 
-                logger.info(f"(step={train_steps:07d}) Loss: {avg_loss:.4f} D_Loss: {d_avg_loss:.4f}, P_Loss: {args.alpha * p_avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+                logger.info(f"(step={train_steps:07d}) Loss: {avg_loss:.4f} Dif_Loss: {d_avg_loss:.4f}, Percept_Loss: {args.alpha * p_avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
 
                 # Reset monitoring variables:
                 running_loss = 0
-                d_running_loss = 0
-                p_running_loss = 0
+                dif_running_loss = 0
+                percept_running_loss = 0
 
                 log_steps = 0
                 start_time = time.time()
 
             # Save DiT checkpoint:
             
-            if train_steps % args.ckpt_every_step == 0 or train_steps == args.total_steps -1 or train_steps==1:
+            if train_steps % args.ckpt_every_step == 0 or train_steps == args.total_steps -1:
                 if rank == 0:
                     checkpoint = {
                         "model": model.module.state_dict(),
-                        "d_opt": d_opt.state_dict(),
+                        "d_opt": dif_opt.state_dict(),
                         "epoch":epoch+1,
                         "args": args,
                         "experiment_dir":experiment_dir,
@@ -350,32 +379,46 @@ def main(args):
             
             if train_steps >= args.total_steps:
                 logger.info("Done!")
-                break
-        if train_steps >= args.total_steps:
-                logger.info("Done!")
-                break
+                return
         
+        avg_loss = torch.tensor(epoch_loss / epoch_steps, device=device)
+        dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
+        avg_loss = avg_loss.item() / dist.get_world_size()
+
+        d_avg_loss = torch.tensor(epoch_dif_loss / epoch_steps, device=device)
+        dist.all_reduce(d_avg_loss, op=dist.ReduceOp.SUM)
+        d_avg_loss = d_avg_loss.item() / dist.get_world_size()
+
+        p_avg_loss = torch.tensor(epoch_percept_loss / epoch_steps, device=device)
+        dist.all_reduce(p_avg_loss, op=dist.ReduceOp.SUM)
+        p_avg_loss = p_avg_loss.item() / dist.get_world_size()
+        
+        logger.info(f"(Epoch {epoch}) step={train_steps:07d} Loss: {avg_loss:.4f} Dif_Loss: {d_avg_loss:.4f}, Percept_Loss: {args.alpha * p_avg_loss:.4f}")
+        epoch_loss = 0.0
+        epoch_dif_loss = 0.0
+        epoch_percept_loss = 0.0
+        epoch_steps = 0
         dist.barrier()
 
 
 if __name__ == "__main__":
     # Default args here will train DiT-XL/2 with the hyperparameters we used in our paper (except training iters).
     parser = argparse.ArgumentParser()
-    parser.add_argument("--experiment_name", type=str, default="perceptual")
+    parser.add_argument("--experiment_name", type=str, default="perceptual_end_to_end")
     parser.add_argument("--data_path", type=str, required=True)
-    parser.add_argument("--results-dir", type=str, default="results")
+    parser.add_argument("--results_dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-B/4")
-    parser.add_argument("--image-size", type=int, choices=[128, 224, 256, 512], default=256)
-    parser.add_argument("--total_steps", type=int, default=500000)
-    parser.add_argument("--global-batch-size", type=int, default=256)
-    parser.add_argument("--global-seed", type=int, default=0)
+    parser.add_argument("--image_size", type=int, choices=[128, 224, 256, 512], default=256)
+    parser.add_argument("--total_steps", type=int, default=20000)
+    parser.add_argument("--global_batch_size", type=int, default=128)
+    parser.add_argument("--global_seed", type=int, default=0)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema") 
-    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--log_every", type=int, default=20)
     parser.add_argument("--ckpt_every_step", type=int, default=10000)
     parser.add_argument("--num_sampling_steps", type=int, default=1000)
-    parser.add_argument("--start_step", type=int, default=10)
-    parser.add_argument('--use_ema', type=str2bool, default=True)
+    parser.add_argument("--start_step", type=int, default=50)
+    parser.add_argument('--load_ema', type=str2bool, default=False)
     parser.add_argument(
         "--resume",
         default="",
@@ -384,14 +427,14 @@ if __name__ == "__main__":
         help="path to latest checkpoint (default: none)",
     )
     parser.add_argument(
-        "--start-epoch",
+        "--start_epoch",
         default=0,
         type=int,
         metavar="N",
         help="manual epoch number (useful on restarts)",
     )
     
-    parser.add_argument("--alpha", type=float, default=0.2)
+    parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument("--perceptual_encoder", type=str, default="resnet", choices=['mlpmixer', 'biggan', 'resnet'])
     parser.add_argument(
         "--encoder_ckpt",

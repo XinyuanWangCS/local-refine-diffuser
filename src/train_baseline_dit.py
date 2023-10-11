@@ -64,7 +64,7 @@ def create_logger(logging_dir):
     """
     Create a logger that writes to a log file and stdout.
     """
-    if not os.path.exists(logging_dir):
+    if logging_dir is not None and not os.path.exists(logging_dir):
         os.makedirs(logging_dir)
     if dist.get_rank() == 0:  # real logger: 只有排名为0的进程执行logging
         logging.basicConfig(
@@ -150,11 +150,7 @@ def main(args):
             print("=> loaded checkpoint '{}' (epoch {})".format(
                     args.resume, checkpoint["epoch"]))
         ema.load_state_dict(checkpoint["ema"])
-        experiment_dir = checkpoint["experiment_dir"]
         train_steps = checkpoint["train_steps"]
-        logger = create_logger(experiment_dir)
-        logger.info(f"Experiment directory created at {experiment_dir}")
-        
     else:
         print(f'Build model: {args.model}')
 
@@ -171,24 +167,24 @@ def main(args):
     
     # Setup an experiment folder:
     exp_name = args.experiment_name
-    if not args.resume:
-        if rank == 0:
-            if args.data_path.endswith('/'):
-                args.data_path = args.data_path[:-1]
-            dataset_name = args.data_path.split('/')[-1]
-            experiment_index = len(glob(f"{args.results_dir}/{exp_name}-{dataset_name}*"))
-            model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
-            experiment_dir = f"{args.results_dir}/{exp_name}-{dataset_name}-{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
-            os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
-            os.makedirs(experiment_dir, exist_ok=True)
+    
+    if rank == 0:
+        if args.data_path.endswith('/'):
+            args.data_path = args.data_path[:-1]
+        dataset_name = args.data_path.split('/')[-1]
+        experiment_index = len(glob(f"{args.results_dir}/{exp_name}-{dataset_name}*"))
+        model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
+        experiment_dir = f"{args.results_dir}/{exp_name}-{dataset_name}-{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
+        os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
+        os.makedirs(experiment_dir, exist_ok=True)
 
-            logger = create_logger(experiment_dir)
-            logger.info(f"Experiment directory created at {experiment_dir}")
-            logger.info("Arguments:")
-            for k, v in vars(args).items():
-                logger.info(f'{k}: {v}')
-        else:
-            logger = create_logger(None)
+        logger = create_logger(experiment_dir)
+        logger.info(f"Experiment directory created at {experiment_dir}")
+        logger.info("Arguments:")
+        for k, v in vars(args).items():
+            logger.info(f'{k}: {v}')
+    else:
+        logger = create_logger(None)
 
     logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
     # Setup data:
@@ -242,7 +238,7 @@ def main(args):
             with torch.no_grad():
                 # Map input images to latent space + normalize latents:
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
-            t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
+            t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)# TODO: 
 
             loss_dict = diffusion.training_losses(model, x, t)
             dm_loss = loss_dict["loss"].mean()
@@ -307,7 +303,9 @@ def main(args):
             
             if train_steps >= args.total_steps:
                 logger.info("Done!")
-            
+                break
+        if train_steps >= args.total_steps:
+            return
         dist.barrier()
     
 if __name__ == "__main__":

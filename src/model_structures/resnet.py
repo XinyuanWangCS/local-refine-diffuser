@@ -30,8 +30,13 @@ def extract_resnet_perceptual_outputs_v1(model, x):
     # layer4
     x = model.resnet.layer4(x)
     layer_outputs.append(x)
-
     return layer_outputs
+
+def perceptual_loss_func(loss_func, pred, gt):
+    loss = 0.0
+    for p, g in zip(pred, gt):
+        loss+=loss_func(p, g)
+    return loss
 
 class ResNet(nn.Module):
     def __init__(self, resolution=32,  num_classes=1000):

@@ -63,7 +63,7 @@ def main(args):
     experiment_dir = args.experiment_dir
     #checkpoint_dir = f"{experiment_dir}/checkpoints"  # Stores saved model checkpoints
     sample_dir = f"{experiment_dir}"
-    sample_dir = os.path.join(sample_dir, args.folder_name)
+    sample_dir = os.path.join(sample_dir, args.sample_folder_name)
 
     train_set_dir = args.train_set_dir
     results = []
@@ -82,14 +82,14 @@ def main(args):
             results.append({'ckpt_name':ckpt_name, 'fid':fid_score})
             print(f'fid: {fid_score}')
     results = pd.DataFrame(results)
-    results.to_excel(os.path.join(experiment_dir, args.file_name))
-    plot(args=args, experiment_dir=experiment_dir, file_name=args.file_name)
+    results.to_excel(os.path.join(experiment_dir, args.output_file_name))
+    plot(args=args, experiment_dir=experiment_dir, file_name=args.output_file_name)
     
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--folder_name", type=str, default='fid_samples')
-    parser.add_argument("--file_name", type=str, default='eval_scores.xlsx')
+    parser.add_argument("--sample_folder_name", type=str, default='fid_samples')
+    parser.add_argument("--output_file_name", type=str, default='eval_scores.xlsx')
     parser.add_argument("--experiment_dir", type=str, required=True)
     parser.add_argument("--train_set_dir", type=str, required=True)
     parser.add_argument("--cal_kid", type=str2bool, default=False)

@@ -283,7 +283,7 @@ def main(args):
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
                 
             t = torch.randint(0, args.start_step, (x.shape[0],), device=device)
-            loss_dict = diffusion.training_losses_step_output_v1(model, x, t)
+            loss_dict = diffusion.training_losses_end_to_end_step(model, x, t)
             pred_x = loss_dict["pred"]
             dif_loss = loss_dict["loss"].mean()
             with torch.no_grad():

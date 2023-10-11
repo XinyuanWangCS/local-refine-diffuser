@@ -86,7 +86,7 @@ def generate_samples(ckpt_str, fid_dir, model, diffuser, vae, rank, device, seed
             seed_count += 1
             z = torch.randn((n, 4, latent_size, latent_size)).to(device)
             samples = diffuser.p_sample_loop(
-                model.forward, z.shape, z, end_step=end_step, clip_denoised = False, device = device
+                model.forward, z.shape, noise=z, end_step=end_step, clip_denoised = False, device = device
             )
             
             samples = vae.decode(samples / 0.18215).sample
@@ -141,7 +141,7 @@ def main(args):
     diffusion = create_diffusion(str(num_sampling_steps))  # default: 1000 steps, linear noise schedule
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
 
-    checkpoints_dir = os.path.join(experiment_dir, 'checkpoints')
+    checkpoints_dir = os.path.join(experiment_dir, args.ckpt_folder)
     if not os.path.exists(checkpoints_dir):
         raise ValueError(f'checkpoints dir not exist: {checkpoints_dir}')
     checkpoints = sorted(os.listdir(checkpoints_dir), reverse=True)
@@ -156,12 +156,12 @@ def main(args):
         
         if args.use_ema:
             model.load_state_dict(ckpt["ema"])
-            print("=> loaded ema checkpoint (epoch {})".format(
-                    ckpt["epoch"]))
+            if rank == 0:
+                print("=> loaded ema checkpoint (epoch {})".format(ckpt["epoch"]))
         else:
             model.load_state_dict(ckpt["model"])
-            print("=> loaded checkpoint (epoch {})".format(
-                     ckpt["epoch"]))
+            if rank == 0:
+                print("=> loaded checkpoint (epoch {})".format(ckpt["epoch"]))
         
         del ckpt
         ckpt = None
@@ -195,6 +195,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--experiment_dir", type=str, required=True)
     parser.add_argument("--save_dir", type=str, default='fid_samples')
+    parser.add_argument("--ckpt_folder", type=str, default='checkpoints')
     parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-S/4")
     parser.add_argument("--image-size", type=int, choices=[128, 224, 256, 512], default=256)
     parser.add_argument("--global-batch-size", type=int, default=256)
