@@ -286,8 +286,8 @@ def main(args):
             loss_dict = diffusion.training_losses_step_output_v1(model, x, t)
             pred_x = loss_dict["pred"]
             dif_loss = loss_dict["loss"].mean()
-            with torch.no_grad():
-                dis_preds = discriminator(pred_x)#extract_resnet_perceptual_outputs_v0(encoder, pred)
+            
+            dis_preds = discriminator(pred_x)#extract_resnet_perceptual_outputs_v0(encoder, pred)
 
             gan_loss = gan_loss_func(dis_preds, labels)
             _, pred_labels = torch.max(dis_preds.data, -1)

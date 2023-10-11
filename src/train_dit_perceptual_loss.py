@@ -289,8 +289,9 @@ def main(args):
             pred, gt = loss_dict["pred"], loss_dict["gt"] #TODO pred_xt, gt_xt
             dm_loss = loss_dict["loss"].mean()
             with torch.no_grad():
-                feature_pred_xt = encoder(pred)#extract_resnet_perceptual_outputs_v0(encoder, pred)
                 feature_gt_xt = encoder(gt)#extract_resnet_perceptual_outputs_v0(encoder, gt)
+            feature_pred_xt = encoder(pred)#extract_resnet_perceptual_outputs_v0(encoder, pred)
+                
             
             percept_loss = ((feature_pred_xt - feature_gt_xt)**2).mean()
             
