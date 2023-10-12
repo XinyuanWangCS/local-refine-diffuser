@@ -8,7 +8,7 @@ dependencies:
   - torchvision
 #  - pytorch-cuda=11.7
   - pip:
-    - timm
+/mnt/pentagon/xiw136/local-refine-diffuser/pretrained_models    - timm
     - diffusers
     - accelerate
     - clean-fid

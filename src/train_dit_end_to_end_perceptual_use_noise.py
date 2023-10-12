@@ -293,24 +293,24 @@ def main(args):
         model.train()
         sampler.set_epoch(epoch)
         logger.info(f"Beginning epoch {epoch}...")
-        
-        if epoch % args.ckpt_every_epoch == 0:
-            if rank == 0:
-                checkpoint = {
-                    "model": model.module.state_dict(),
-                    "d_opt": dif_opt.state_dict(),
-                    "epoch":epoch+1,
-                    "args": args,
-                    "experiment_dir":experiment_dir,
-                    "train_steps": train_steps,
-                    "ema": ema.state_dict(),
-                }
-                
-                epoch_checkpoint_dir = os.path.join(experiment_dir, 'epoch_checkpoints')
-                os.makedirs(epoch_checkpoint_dir, exist_ok=True)
-                epoch_checkpoint_path_fin = os.path.join(epoch_checkpoint_dir, f'{epoch:05d}.pt')
-                torch.save(checkpoint, epoch_checkpoint_path_fin)
-                logger.info(f"Saved epoch checkpoint to {epoch_checkpoint_path_fin}")
+        if args.save_epoch:
+            if epoch % args.ckpt_every_epoch == 0:
+                if rank == 0:
+                    checkpoint = {
+                        "model": model.module.state_dict(),
+                        "d_opt": dif_opt.state_dict(),
+                        "epoch":epoch+1,
+                        "args": args,
+                        "experiment_dir":experiment_dir,
+                        "train_steps": train_steps,
+                        "ema": ema.state_dict(),
+                    }
+                    
+                    epoch_checkpoint_dir = os.path.join(experiment_dir, 'epoch_checkpoints')
+                    os.makedirs(epoch_checkpoint_dir, exist_ok=True)
+                    epoch_checkpoint_path_fin = os.path.join(epoch_checkpoint_dir, f'{epoch:05d}.pt')
+                    torch.save(checkpoint, epoch_checkpoint_path_fin)
+                    logger.info(f"Saved epoch checkpoint to {epoch_checkpoint_path_fin}")
         
         for x, _ in loader:
             x = x.to(device)
@@ -378,7 +378,7 @@ def main(args):
                 start_time = time.time()
 
             # Save DiT checkpoint:
-            if train_steps % args.ckpt_every_step == 0 or train_steps == args.total_steps -1 :
+            if train_steps % args.ckpt_every_step == 0:
                 if rank == 0:
                     checkpoint = {
                         "model": model.module.state_dict(),
