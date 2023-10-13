@@ -30,6 +30,33 @@ from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 import imageio
 
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+
+
+def plot_images_from_dir(directory, image_num, save_path):
+    image_files = [os.path.join(directory, f) for f in os.listdir(directory) if f.endswith('.png')]
+    image_files = sorted(image_files)[:image_num]
+    
+    rows = (image_num + 3) // 4
+    fig, axs = plt.subplots(rows, 4, figsize=(5*4, 5*rows))
+    
+    for idx, ax in enumerate(axs.ravel()):
+        if idx < len(image_files):
+            img = imageio.imread(image_files[idx])
+            ax.imshow(img)
+            ax.axis('off')
+        else:
+            ax.axis('off')
+    
+    # Set title to the name of the directory with a larger font size
+    fig.suptitle(os.path.basename(directory), fontsize=25)
+    
+    # Ensure no spacing between subplots and adjust space at the top
+    plt.subplots_adjust(wspace=0, hspace=0, top=0.97)
+    plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
+    plt.close()
+    
 def str2bool(v):
     if isinstance(v, bool):
        return v
@@ -64,9 +91,13 @@ def cleanup():
 def generate_sequence_samples(
     model, diffusion, vae, 
     save_dir, 
-    rank, device, 
-    latent_size, batch_size, 
-    start_t=0, end_t=50, internal=1,
+    rank, 
+    device, 
+    latent_size, 
+    batch_size, 
+    start_t, 
+    end_t, 
+    interval,
     num_samples=1280,
     logger=None, 
     seed=None, 
@@ -84,7 +115,7 @@ def generate_sequence_samples(
             print(f"Total number of images that will be sampled: {total_samples}")
             print(f'sample needed :{samples_needed_this_gpu}, iterations: {iterations}')
     
-    save_indices = list(range(start_t, end_t, internal))[::-1]
+    save_indices = list(range(start_t, end_t, interval))[::-1]
     os.makedirs(save_dir, exist_ok=True)
     for i in save_indices:
         os.makedirs(os.path.join(save_dir, 'fake', f'{i:04d}'), exist_ok=True)
@@ -119,7 +150,7 @@ def generate_sequence_samples(
                         if index >= num_samples:
                             return
                         img = (img + 1) / 2
-                        imageio.imwrite(os.path.join(save_dir, 'fake', f'{i:04d}', '{index:05d}.tiff'), img)
+                        imageio.imwrite(os.path.join(save_dir, 'fake', f'{i:04d}', f'{index:05d}.tiff'), img)
                     
             total += global_batch_size
 
@@ -135,8 +166,12 @@ def main(args):
     assert args.global_batch_size % dist.get_world_size() == 0, f"Batch size must be divisible by world size."
     rank = dist.get_rank()
     device = rank % torch.cuda.device_count()
-    seed = args.global_seed #TODO
-    torch.manual_seed(seed)
+    if args.use_seed:
+        seed = args.global_seed #TODO
+        torch.manual_seed(seed)
+    else:
+        seed = None
+    
     torch.cuda.set_device(device)
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
 
@@ -147,9 +182,6 @@ def main(args):
     checkpoint_dir = args.checkpoint_dir
     if not os.path.exists(checkpoint_dir):
         raise ValueError(f'Experiment dir not exist: {checkpoint_dir}')
-
-    save_dir = args.save_dir
-    os.makedirs(save_dir, exist_ok=True)
 
     # Create model:
     assert args.image_size % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
@@ -168,7 +200,7 @@ def main(args):
     ckpt = torch.load(checkpoint_dir, map_location=torch.device(f'cuda:{device}'))
     model = DiT_Uncondition_models[args.model](input_size=latent_size).to(device)
     
-    if args.use_ema:
+    if args.load_ema:
         model.load_state_dict(ckpt["ema"])
         print("=> loaded ema checkpoint (epoch {})".format(
                 ckpt["epoch"]))
@@ -189,40 +221,41 @@ def main(args):
             diffusion=diffusion,
             vae=vae, 
             logger=None,
-            ckpt_name = ckpt_name,
-            save_dir = save_dir,
-             
-            
+            save_dir = args.save_dir,
             rank=rank, 
             device=device, 
             latent_size=latent_size,
+            batch_size=batch_size,
             start_t=args.start_t,
             end_t = args.end_t,
-            num_samples=args.fid_samples, 
-            n=batch_size,
+            interval = args.interval,
+            num_samples=args.num_samples, 
             seed=seed)
     if rank == 0:    
-        print(f"Saved {args.fid_samples} images for {ckpt_name}th epoch")
-    del model
+        print(f"Saved {args.num_samples} images for {ckpt_name}th epoch")
         
-        
-
+    if args.plot_examples:
+        plot_images_from_dir(directory=os.path.join(args.save_dir, 'fake'), 
+                             image_num=16, 
+                             save_path=args.save_dir)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint_dir", type=str, required=True)
-    parser.add_argument("--save_dir", type=str, default='results/samples')
+    parser.add_argument("--save_dir", type=str, default='results/sample_t_sequence')
     parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-B/4")
     parser.add_argument("--image-size", type=int, choices=[128, 224, 256, 512], default=256)
-    parser.add_argument("--global-batch-size", type=int, default=128)
-    parser.add_argument("--global-seed", type=int, default=0)
+    parser.add_argument("--global_batch_size", type=int, default=128)
+    parser.add_argument("--global_seed", type=int, default=0)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training
-    parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--fid_samples", type=int, default=30000)
+    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--num_samples", type=int, default=128)
     parser.add_argument("--num_sampling_steps", type=int, default=1000)
+    parser.add_argument("--start_t", type=int, default=0)
     parser.add_argument("--end_t", type=int, default=50)
-    parser.add_argument("--start_t", type=int, default=50)
-    parser.add_argument('--use_ema', type=str2bool, default=False)
-    parser.add_argument('--use_seed', type=str2bool, default=False)
+    parser.add_argument("--interval", type=int, default=100)
+    parser.add_argument('--load_ema', type=str2bool, default=False)
+    parser.add_argument('--use_seed', type=str2bool, default=True)
+    parser.add_argument('--plot_examples', type=str2bool, default=True)
     args = parser.parse_args()
     main(args)

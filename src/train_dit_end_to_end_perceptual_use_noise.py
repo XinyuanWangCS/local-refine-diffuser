@@ -440,6 +440,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_sampling_steps", type=int, default=1000)
     parser.add_argument("--start_step", type=int, default=1000)
     parser.add_argument('--load_ema', type=str2bool, default=False)
+    parser.add_argument('--save_epoch', type=str2bool, default=False)
     parser.add_argument(
         "--resume",
         default="",

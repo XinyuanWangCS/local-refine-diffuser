@@ -86,6 +86,12 @@ CUDA_VISIBLE_DEVICES=
 ```bash
 torchrun --nnodes=1 --nproc_per_node=8 src/sample_t_sequence.py --checkpoint_dir results/baseline-celebahq256-000-DiT_Uncondition-B-4/checkpoints/00180000.pt --save_dir results/test_tiff --fid_samples 100 --end_step 0 
 ```
+
+### Sample t sequence
+```bash
+torchrun --nnodes=1 --nproc_per_node=4 src/sample_t_sequence.py --checkpoint_dir results/baseline-celebahq256-000-DiT_Uncondition-B-4/checkpoints/00200000.pt --num_samples 128 --start_t 0 --end_t 1000 --interval 100 --load_ema False --use_seed True
+```
+
 ### Memory requirement:
 DiT_Uncondition-S-4:6242
 DiT_Uncondition-B-4: 12178
