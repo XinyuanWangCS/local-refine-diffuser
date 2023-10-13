@@ -513,6 +513,47 @@ class GaussianDiffusion:
                 yield out
                 img = out["sample"]
 
+    def p_sample_loop_progressive_step(
+        self,
+        model,
+        shape,
+        t,
+        samples=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        device=None,
+    ):
+        """
+        Generate samples from the model and yield intermediate samples from
+        each timestep of diffusion.
+        Arguments are the same as p_sample_loop().
+        Returns a generator over dicts, where each dict is the return value of
+        p_sample().
+        """
+        if device is None:
+            device = next(model.parameters()).device
+        assert isinstance(shape, (tuple, list))
+        if samples is not None:
+            samples = samples
+        else:
+            samples = th.randn(*shape, device=device)
+        
+        t = th.tensor([t] * shape[0], device=device)
+        with th.no_grad():
+            out = self.p_sample(
+                model,
+                samples,
+                t,
+                clip_denoised=clip_denoised,
+                denoised_fn=denoised_fn,
+                cond_fn=cond_fn,
+                model_kwargs=model_kwargs,
+            )
+            samples = out["sample"]
+            return samples
+                
     def ddim_sample(
         self,
         model,

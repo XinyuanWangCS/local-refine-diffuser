@@ -22,8 +22,8 @@ from time import time
 import argparse
 
 from model_structures.mlp_mixer import MLPMixerClassifier
-from model_structures.biggan_classifier import BigGANClassifier
 from model_structures.resnet import ResNet
+from model_structures.conditional_resnet import ConditionResNet
 
 from diffusers.models import AutoencoderKL
 from datasets import load_dataset
@@ -109,8 +109,8 @@ def main(args):
 
     # Create model:
     input_size = args.image_size // 8
-    if args.model == 'biggan':
-        model = BigGANClassifier(in_channels=4, resolution=input_size, output_dim=1000)
+    if args.model == 'condition_resnet':
+        model = ConditionResNet(input_size=input_size, class_num=1000)
     elif args.model == 'mlpmixer':
         model = MLPMixerClassifier(in_channels=4, image_size=input_size, patch_size=4, num_classes=1000,
                  dim=768, depth=12, token_dim=196, channel_dim=1024)
@@ -240,8 +240,11 @@ def main(args):
             with torch.no_grad():
                 # Map input images to latent space + normalize latents:
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
-                
-            x = model(x)
+            if args.model == "condition_resnet":
+                t = torch.randint(0, 50, (x.shape[0],), device=device)
+                x = model(x, t)
+            else:
+                x = model(x)
             loss = criterion(x, y)
             epoch_loss += loss.item()
             _, pred = torch.max(x.data, -1)
@@ -342,7 +345,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="resnet", choices=['mlpmixer', 'biggan', 'resnet'])
+    parser.add_argument("--model", type=str, default="resnet", choices=['mlpmixer', 'condition_resnet', 'resnet'])
     parser.add_argument("--experiment-name", type=str, default="imagenet_classifer")
     parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--results-dir", type=str, default="results")

@@ -80,6 +80,12 @@ torchrun --nnodes=1 --nproc_per_node=8 src/train_dit_end_to_end_perceptual_use_n
 torchrun --nnodes=1 --nproc_per_node=8 src/train_dit_end_to_end_perceptual_use_noise_new_p_loss.py --model DiT_Uncondition-B/4 --data_path datasets/celebahq256/  --image_size 256 --total_steps 10000 --ckpt_every_step 500 --global_batch_size 128 --load_ema False --start_step 1000 --perceptual_encoder resnet --encoder_ckpt encoder_ckpts/resnet00000070.pt --resume results/baseline-celebahq256-000-DiT_Uncondition-B-4/checkpoints/00200000.pt --alpha 0.1
 ```
 CUDA_VISIBLE_DEVICES=
+
+
+### test
+```bash
+torchrun --nnodes=1 --nproc_per_node=8 src/sample_t_sequence.py --checkpoint_dir results/baseline-celebahq256-000-DiT_Uncondition-B-4/checkpoints/00180000.pt --save_dir results/test_tiff --fid_samples 100 --end_step 0 
+```
 ### Memory requirement:
 DiT_Uncondition-S-4:6242
 DiT_Uncondition-B-4: 12178
