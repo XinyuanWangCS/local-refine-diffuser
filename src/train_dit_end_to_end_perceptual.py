@@ -417,7 +417,7 @@ if __name__ == "__main__":
     parser.add_argument("--log_every", type=int, default=20)
     parser.add_argument("--ckpt_every_step", type=int, default=10000)
     parser.add_argument("--num_sampling_steps", type=int, default=1000)
-    parser.add_argument("--start_step", type=int, default=50)
+    parser.add_argument("--start_step", type=int, default=1000)
     parser.add_argument('--load_ema', type=str2bool, default=False)
     parser.add_argument(
         "--resume",

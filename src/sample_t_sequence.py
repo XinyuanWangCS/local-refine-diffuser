@@ -7,22 +7,24 @@
 """
 A minimal training script for DiT using PyTorch DDP.
 """
-import torch
+import os
 import math
+import argparse
+from tqdm import tqdm
+
+import torch
+from torch import nn
 # the first flag below was False when we tested this script but True makes A100 training a lot faster:
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch import nn
+
 from torchvision.transforms import functional as F
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
-from tqdm import tqdm
-from PIL import Image
-import argparse
-import os
-import time
+
+
 from model_structures.model_uncondition import DiT_Uncondition_models
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
@@ -60,12 +62,13 @@ def cleanup():
 #################################################################################
 
 def generate_sequence_samples(
-    model, diffuser, vae, logger, 
+    model, diffusion, vae, 
     save_dir, 
     rank, device, 
     latent_size, batch_size, 
     start_t=0, end_t=50, internal=1,
-    num_samples=640,
+    num_samples=1280,
+    logger=None, 
     seed=None, 
     **kwargs):
     
@@ -74,15 +77,18 @@ def generate_sequence_samples(
     samples_needed_this_gpu = int(total_samples // dist.get_world_size())
     iterations = int(samples_needed_this_gpu // batch_size)
     if rank == 0:
-        logger.info(f"Total number of images that will be sampled: {total_samples}")
-        logger.info(f'sample needed :{samples_needed_this_gpu}, iterations: {iterations}')
-        
+        if logger is not None:
+            logger.info(f"Total number of images that will be sampled: {total_samples}")
+            logger.info(f'sample needed :{samples_needed_this_gpu}, iterations: {iterations}')
+        else:
+            print(f"Total number of images that will be sampled: {total_samples}")
+            print(f'sample needed :{samples_needed_this_gpu}, iterations: {iterations}')
+    
+    save_indices = list(range(start_t, end_t, internal))[::-1]
     os.makedirs(save_dir, exist_ok=True)
-    
-    
-
-    
-
+    for i in save_indices:
+        os.makedirs(os.path.join(save_dir, 'fake', f'{i:04d}'), exist_ok=True)
+        
     total = 0
     pbar = range(iterations)
     pbar = tqdm(pbar) if rank == 0 else pbar
@@ -93,9 +99,9 @@ def generate_sequence_samples(
                 torch.manual_seed(seed + rank + seed_count * dist.get_world_size())
                 seed_count += 1
             samples = torch.randn((batch_size, 4, latent_size, latent_size)).to(device)
-            indices = list(range(end_t, diffuser.num_timesteps))[::-1]
+            indices = list(range(start_t, diffusion.num_timesteps))[::-1]
             for t in indices:
-                samples = diffuser.p_sample_loop_progressive_step(
+                samples = diffusion.p_sample_loop_progressive_step(
                     model = model.forward, 
                     shape = samples.shape, 
                     t = t, 
@@ -104,7 +110,7 @@ def generate_sequence_samples(
                     device = device
                 )
             
-                if t < start_t and t >= end_t:
+                if t in save_indices:
                     images = vae.decode(samples / 0.18215).sample
                     images = images.permute(0, 2, 3, 1).to("cpu").numpy()
 
@@ -112,9 +118,8 @@ def generate_sequence_samples(
                         index = i + rank * batch_size + total
                         if index >= num_samples:
                             return
-                        img = (img+1)/2
-                        print(img.mean(),img.max(),img.min())
-                        imageio.imwrite(f'{ckpt_fid_samples_dir}/{index:07d}.tiff', img)
+                        img = (img + 1) / 2
+                        imageio.imwrite(os.path.join(save_dir, 'fake', f'{i:04d}', '{index:05d}.tiff'), img)
                     
             total += global_batch_size
 
@@ -179,12 +184,15 @@ def main(args):
     model.eval()
 
     with torch.no_grad():
-        generate_samples(
+        generate_sequence_samples(
+            model=model,
+            diffusion=diffusion,
+            vae=vae, 
+            logger=None,
             ckpt_name = ckpt_name,
             save_dir = save_dir,
-            model=model, 
-            diffuser=diffusion, 
-            vae=vae, 
+             
+            
             rank=rank, 
             device=device, 
             latent_size=latent_size,

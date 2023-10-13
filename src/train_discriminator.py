@@ -26,6 +26,7 @@ from diffusers.models import AutoencoderKL
 
 from utils.utils import *
 from model_structures.resnet import ResNet
+from model_structures.conditional_resnet import ConditionResNet
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -101,6 +102,8 @@ def main(args):
 
     if args.model == 'resnet':
         model = ResNet(resolution=input_size, num_classes=1000)
+    elif args.model == 'condition_resnet':
+        model = ConditionResNet(input_size=input_size, class_num=2)
     else:
         raise ValueError(f'{args.model} is not supported.')
     
@@ -140,8 +143,8 @@ def main(args):
     else:
         if rank == 0:
             logger.info(f'Build model: {args.model}')
-        
-    model.resnet.fc = nn.Linear(model.resnet.fc.in_features, 2)
+    if args.model == 'resnet': 
+        model.resnet.fc = nn.Linear(model.resnet.fc.in_features, 2)
     if rank == 0:
         logger.info(f"{args.model} parameters: {sum(p.numel() for p in model.parameters()):,}")
     # DataParrallel
@@ -196,7 +199,11 @@ def main(args):
                 # Map input images to latent space + normalize latents:
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
                 
-            x = model(x)
+            if args.model == "condition_resnet":
+                t = torch.randint(0, 50, (x.shape[0],), device=device)
+                x = model(x, t)
+            else:
+                x = model(x)
             loss = criterion(x, y)
             epoch_loss += loss.item()
             _, pred = torch.max(x.data, -1)
@@ -264,7 +271,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="resnet", choices=['mlpmixer', 'resnet'])
+    parser.add_argument("--model", type=str, default="resnet", choices=['mlpmixer', 'resnet', 'condition_resnet'])
     parser.add_argument("--experiment_name", type=str, default="pretrain_discriminator")
     parser.add_argument("--data_path", type=str, required=True, default="datasets/gan_data")
     parser.add_argument("--results_dir", type=str, default="results")
