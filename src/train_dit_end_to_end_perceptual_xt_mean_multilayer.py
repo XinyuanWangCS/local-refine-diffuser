@@ -186,7 +186,7 @@ def main(args):
         pacific = pytz.timezone('America/Los_Angeles')
         pacific_time = datetime.now(pacific)
         formatted_time = pacific_time.strftime("%Y%m%d%H%M")
-        experiment_dir = f"{args.results_dir}/{exp_name}-{dataset_name}-{model_string_name}-{formatted_time}"  # Create an experiment folder
+        experiment_dir = f"{args.results_dir}/{formatted_time}-{exp_name}-{dataset_name}-{model_string_name}"  # Create an experiment folder
         os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
         os.makedirs(experiment_dir, exist_ok=True)
         logger = create_logger(experiment_dir)

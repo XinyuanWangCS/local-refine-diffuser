@@ -92,6 +92,11 @@ torchrun --nnodes=1 --nproc_per_node=8 src/sample_t_sequence.py --checkpoint_dir
 torchrun --nnodes=1 --nproc_per_node=4 src/sample_t_sequence.py --checkpoint_dir results/baseline-celebahq256-000-DiT_Uncondition-B-4/checkpoints/00200000.pt --num_samples 128 --start_t 0 --end_t 1000 --interval 100 --load_ema False --use_seed True
 ```
 
+# gan_pipeline_end_to_end.py
+```bash
+torchrun --nnodes=1 --nproc_per_node=4 src/gan_pipeline_end_to_end.py --model DiT_Uncondition-B/4 --data_dir datasets/celebahq256/  --image_size 256 --total_steps 1000 --dis_total_steps 100 --global_batch_size 64 --ckpt_every_step 100 --iteration_num 3 --num_samples 128 --start_t 0 --end_t 10 --interval 1 --discriminator condition_resnet --resume results/baseline-celebahq256-000-DiT_Uncondition-B-4/checkpoints/00200000.pt --alpha 0.5
+```
+
 torchrun --nnodes=1 --nproc_per_node=4 src/gd_sample_one_model_one_t.py --checkpoint_dir pretrained_models/256x256_diffusion_uncond.pt
 
 ### Memory requirement:

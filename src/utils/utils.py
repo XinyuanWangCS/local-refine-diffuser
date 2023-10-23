@@ -1,52 +1,49 @@
 from torch.utils.data import Dataset
 from PIL import Image
+import os
 import torch
 import logging
 import argparse
+import pytz
+from datetime import datetime
 import numpy as np
 from collections import OrderedDict
-from torch.utils.data import DataLoader
-from torchvision import transforms
-from torch.utils.data.distributed import DistributedSampler
-import torch.distributed as dist
-from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
-from torchvision.datasets import ImageFolder
 from torchvision import transforms
 
-def get_sampler_and_loader(args, data_dir, rank, logger=None):
-    transform = transforms.Compose([
-        transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
-    ])
-    dataset = ImageFolder(data_dir, transform=transform)
-    sampler = DistributedSampler(
-        dataset,
-        num_replicas=dist.get_world_size(),
-        rank=rank,
-        shuffle=True,
-        seed=args.global_seed 
-    )
-    loader = DataLoader(
-        dataset,
-        batch_size=int(args.global_batch_size // dist.get_world_size()),
-        shuffle=False,
-        sampler=sampler,
-        num_workers=args.num_workers,
-        pin_memory=True,
-        drop_last=True
-    )
-    if rank == 0 and logger is not None:
-        logger.info(f"Dataset {args.data_dir} contains {len(dataset)} images. Classes: {dataset.class_to_idx}")
-    return sampler, loader
+def build_logger(args, rank):
+    # Setup an experiment folder:
+    exp_name = args.experiment_name
+    if args.data_dir.endswith('/'):
+        args.data_dir = args.data_dir[:-1]
+    dataset_name = args.data_dir.split('/')[-1]
+    model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
+    pacific = pytz.timezone('America/Los_Angeles')
+    pacific_time = datetime.now(pacific)
+    formatted_time = pacific_time.strftime("%m%d%H%M")
+    experiment_dir = f"{args.results_dir}/{formatted_time}-{exp_name}-{dataset_name}-{model_string_name}" 
+    
+    logger = None
+    if rank == 0:
+        
+        os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
+        os.makedirs(experiment_dir, exist_ok=True)
+        logger = create_logger(experiment_dir, rank)
+        logger.info('------------------------------------------')
+        logger.info(f'Build model: {args.model}')
+        logger.info(f"Experiment directory created at {experiment_dir}")
+        logger.info("Arguments:")
+        for k, v in vars(args).items():
+            logger.info(f'{k}: {v}')
+        logger.info('------------------------------------------')
+    else:
+        logger = create_logger(None, rank)
+    return experiment_dir, logger
 
-def create_logger(logging_dir):
+def create_logger(logging_dir, rank):
     """
     Create a logger that writes to a log file and stdout.
     """
-    if dist.get_rank() == 0:
+    if rank == 0:
         logging.basicConfig(
             level=logging.INFO, 
             format='[\033[34m%(asctime)s\033[0m] %(message)s',
@@ -59,11 +56,6 @@ def create_logger(logging_dir):
         logger.addHandler(logging.NullHandler())
     return logger
 
-def cleanup():
-    """
-    End DDP training.
-    """
-    dist.destroy_process_group()
 
 @torch.no_grad()
 def update_ema(ema_model, model, decay=0.9999):
@@ -141,32 +133,4 @@ def get_transform(image_size=256):
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
     ])
     return transform
-
-def get_ddp_sampler_loader(dataset,
-        num_replicas,
-        rank,
-        sample_shuffle,
-        seed,
-        batch_size,
-        num_workers,
-        pin_memory,
-        drop_last):
-    
-    sampler = DistributedSampler(
-        dataset,
-        num_replicas=num_replicas,
-        rank=rank,
-        shuffle=sample_shuffle,
-        seed=seed
-    )
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        sampler=sampler,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        drop_last=drop_last
-    )
-    return sampler, loader
     
