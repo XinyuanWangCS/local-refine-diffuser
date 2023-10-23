@@ -328,10 +328,10 @@ def main(args):
             pred, gt = loss_dict["pred"], loss_dict["gt"] 
             dif_loss = loss_dict["loss"].mean()
             with torch.no_grad():
-                feature_gt = encoder(gt)#extract_resnet_perceptual_outputs_v0(encoder, gt)
-            feature_pred = encoder(pred)#extract_resnet_perceptual_outputs_v0(encoder, pred)
+                feature_gt = encoder(gt)
+            feature_pred = encoder(pred)
             
-            percept_loss = percept_loss_func(feature_pred, feature_gt)
+            percept_loss = percept_loss_func(feature_pred.mean(axis=0), feature_gt.mean(axis=0))
             
             loss = dif_loss + args.alpha * percept_loss
             dif_opt.zero_grad()
@@ -427,7 +427,7 @@ def main(args):
 if __name__ == "__main__":
     # Default args here will train DiT-XL/2 with the hyperparameters we used in our paper (except training iters).
     parser = argparse.ArgumentParser()
-    parser.add_argument("--experiment_name", type=str, default="train_dit_end_to_end_perceptual_use_noise")
+    parser.add_argument("--experiment_name", type=str, default="train_dit_end_to_end_perceptual_noise_mean")
     parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--results_dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-B/4")

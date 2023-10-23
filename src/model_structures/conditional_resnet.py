@@ -50,6 +50,7 @@ class ConditionResNet(nn.Module):
         self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
         
         self.fc = nn.Linear(block_output_channels[3], class_num)
+        self.sigmoid = nn.Sigmoid()
         
     def forward(self, x, t=None):
         emb = None
@@ -70,5 +71,5 @@ class ConditionResNet(nn.Module):
         
         x = torch.flatten(x, 1)
         x = self.fc(x)
-        
+        x = self.sigmoid(x)
         return x

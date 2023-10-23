@@ -38,6 +38,12 @@ def perceptual_loss_func(loss_func, pred, gt):
         loss+=loss_func(p, g)
     return loss
 
+def mean_perceptual_loss_func(loss_func, pred, gt):
+    loss = 0.0
+    for p, g in zip(pred, gt):
+        loss+=loss_func(p.mean(axis=0), g.mean(axis=0))
+    return loss
+
 class ResNet(nn.Module):
     def __init__(self, resolution=32,  num_classes=1000):
         super(ResNet, self).__init__()

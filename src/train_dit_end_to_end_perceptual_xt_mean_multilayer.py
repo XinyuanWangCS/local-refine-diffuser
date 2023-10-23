@@ -34,7 +34,7 @@ from diffusers.models import AutoencoderKL
 from model_structures.model_uncondition import DiT_Uncondition_models
 
 from model_structures.mlp_mixer import MLPMixerClassifier
-from model_structures.resnet import *
+from model_structures.resnet import ResNet, mean_perceptual_loss_func, extract_resnet_perceptual_outputs_v1
 from copy import deepcopy
 import pytz
 
@@ -324,14 +324,14 @@ def main(args):
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
                 
             t = torch.randint(0, args.start_step, (x.shape[0],), device=device)
-            loss_dict = diffusion.training_losses_noise_output(model, x, t)
+            loss_dict = diffusion.training_losses_output_xt(model, x, t)
             pred, gt = loss_dict["pred"], loss_dict["gt"] 
             dif_loss = loss_dict["loss"].mean()
             with torch.no_grad():
-                feature_gt = encoder(gt)#extract_resnet_perceptual_outputs_v0(encoder, gt)
-            feature_pred = encoder(pred)#extract_resnet_perceptual_outputs_v0(encoder, pred)
+                feature_gt = extract_resnet_perceptual_outputs_v1(encoder, gt)#extract_resnet_perceptual_outputs_v0(encoder, gt)
+            feature_pred = extract_resnet_perceptual_outputs_v1(encoder, pred)#extract_resnet_perceptual_outputs_v0(encoder, pred)
             
-            percept_loss = percept_loss_func(feature_pred, feature_gt)
+            percept_loss = mean_perceptual_loss_func(percept_loss_func, feature_pred, feature_gt)
             
             loss = dif_loss + args.alpha * percept_loss
             dif_opt.zero_grad()
@@ -416,7 +416,7 @@ def main(args):
         dist.all_reduce(p_avg_loss, op=dist.ReduceOp.SUM)
         p_avg_loss = p_avg_loss.item() / dist.get_world_size()
         
-        logger.info(f"(Epoch {epoch}) step={train_steps:07d} Loss: {avg_loss:.4f} Dif_Loss: {d_avg_loss:.4f}, Percept_Loss: {args.alpha * p_avg_loss:.4f}")
+        logger.info(f"(Epoch {epoch}) step={train_steps:07d} Loss: {avg_loss:.4f} Dif_Loss: {d_avg_loss:.4f}, Percept_Loss: {args.alpha * p_avg_loss:.6f}")
         epoch_loss = 0.0
         epoch_dif_loss = 0.0
         epoch_percept_loss = 0.0
@@ -427,7 +427,7 @@ def main(args):
 if __name__ == "__main__":
     # Default args here will train DiT-XL/2 with the hyperparameters we used in our paper (except training iters).
     parser = argparse.ArgumentParser()
-    parser.add_argument("--experiment_name", type=str, default="train_dit_end_to_end_perceptual_use_noise")
+    parser.add_argument("--experiment_name", type=str, default="train_dit_end_to_end_perceptual_xt_mean_multilayer")
     parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--results_dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-B/4")

@@ -9,186 +9,183 @@ A minimal training script for DiT using PyTorch DDP.
 """
 import os
 import time
+import math
+import pytz
+import random
 import argparse
-import logging
+from tqdm import tqdm
 from copy import deepcopy
-from PIL import Image
 from glob import glob
-from itertools import count
-from collections import OrderedDict
+from datetime import datetime
 
 import torch
 import torch.nn as nn
-import numpy as np
+import itertools
 # the first flag below was False when we tested this script but True makes A100 training a lot faster:
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 # torch.backends.cuda.reserved_memory = 0
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
-from torchvision.datasets import ImageFolder
-from torchvision import transforms
 
+
+import imageio
 from diffusion import create_diffusion
 from diffusers.models import AutoencoderKL
 from model_structures.model_uncondition import DiT_Uncondition_models
 from model_structures.resnet import ResNet
-
+from model_structures.conditional_resnet import ConditionResNet
+from utils.utils import str2bool, requires_grad, create_logger, update_ema, get_sampler_and_loader
 
 #################################################################################
 #                             Training Helper Functions                         #
 #################################################################################
-def str2bool(v):
-    if isinstance(v, bool):
-       return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
-
-@torch.no_grad()
-def update_ema(ema_model, model, decay=0.9999):
-    """
-    Step the EMA model towards the current model.
-    """
-    ema_params = OrderedDict(ema_model.named_parameters())
-    model_params = OrderedDict(model.named_parameters())
-
-    for name, param in model_params.items():
-        # TODO: Consider applying only to params that require_grad to avoid small numerical changes of pos_embed
-        ema_params[name].mul_(decay).add_(param.data, alpha=1 - decay)
-   
-def requires_grad(model, flag=True):
-    """
-    Set requires_grad flag for all parameters in a model.
-    """
-    for p in model.parameters():
-        p.requires_grad = flag
-
-
-def cleanup():
-    """
-    End DDP training.
-    """
-    dist.destroy_process_group()
-
-
-def create_logger(logging_dir):
-    """
-    Create a logger that writes to a log file and stdout.
-    """
-    if dist.get_rank() == 0:
-        logging.basicConfig(
-            level=logging.INFO, 
-            format='[\033[34m%(asctime)s\033[0m] %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S',
-            handlers=[logging.StreamHandler(), logging.FileHandler(f"{logging_dir}/log.txt")]
-        )
-        logger = logging.getLogger(__name__)
-    else:  # dummy logger (does nothing)
-        logger = logging.getLogger(__name__)
-        logger.addHandler(logging.NullHandler())
-    return logger
-
-
-def center_crop_arr(pil_image, image_size):
-    """
-    Center cropping implementation from ADM.
-    https://github.com/openai/guided-diffusion/blob/8fb3ad9197f16bbc40620447b2742e13458d2831/guided_diffusion/image_datasets.py#L126
-    """
-    while min(*pil_image.size) >= 2 * image_size:
-        pil_image = pil_image.resize(
-            tuple(x // 2 for x in pil_image.size), resample=Image.BOX
-        )
-
-    scale = image_size / min(*pil_image.size)
-    pil_image = pil_image.resize(
-        tuple(round(x * scale) for x in pil_image.size), resample=Image.BICUBIC
-    )
-
-    arr = np.array(pil_image)
-    crop_y = (arr.shape[0] - image_size) // 2
-    crop_x = (arr.shape[1] - image_size) // 2
-    return Image.fromarray(arr[crop_y: crop_y + image_size, crop_x: crop_x + image_size])
+def generate_q_sequence_samples(
+    diffusion,
+    loader,
+    save_dir, 
+    rank, 
+    device,
+    batch_size, 
+    start_t, 
+    end_t, 
+    interval,
+    logger = None,
+    vae = None,
+    num_samples=1280,
+    seed=None, 
+    **kwargs):
+    
+    global_batch_size = batch_size * dist.get_world_size()
+    total_samples = int(math.ceil(num_samples / global_batch_size) * global_batch_size)
+    samples_needed_this_gpu = int(total_samples // dist.get_world_size())
+    iterations = int(samples_needed_this_gpu // batch_size)
+    
+    if rank == 0 and logger is not None:
+        logger.info(f"Total number of images that will be sampled: {total_samples}")
+        logger.info(f'sample needed :{samples_needed_this_gpu}, iterations: {iterations}')
+    
+    save_indices = list(range(start_t, end_t, interval))[::-1]
+    os.makedirs(save_dir, exist_ok=True)
+    for t in save_indices:
+        os.makedirs(os.path.join(save_dir, 'real', f'{t:04d}'), exist_ok=True)
+        
+    total = 0
+    pbar = enumerate(loader)
+    pbar = tqdm(pbar) if rank == 0 else pbar
+    seed_count = 0
+    with torch.no_grad():
+        for i, (x, y) in pbar:
+            if seed is not None:
+                torch.manual_seed(seed + rank + seed_count * dist.get_world_size())
+                seed_count += 1
+            if vae is not None:
+                with torch.no_grad():
+                    # Map input images to latent space + normalize latents:
+                    x = x.to(device)
+                    x = vae.encode(x).latent_dist.sample().mul_(0.18215)
+                
+            for t in save_indices:
+                t_tensor = torch.tensor([t] * batch_size, device=device)
+                images = diffusion.q_sample(x, t_tensor)
+                if vae is not None:
+                    images = vae.decode(images / 0.18215).sample
+                    images = images.permute(0, 2, 3, 1).to("cpu").numpy()
+                for i, img in enumerate(images):
+                    index = i + rank * batch_size + total
+                    if index >= num_samples:
+                        return
+                    img = (img + 1) / 2
+                    imageio.imwrite(os.path.join(save_dir, 'real', f'{t:04d}', f'{index:05d}.tiff'), img)
+                
+            total += global_batch_size
 
 
+def generate_p_sequence_samples(
+    model, 
+    diffusion, 
+    vae, 
+    save_dir, 
+    rank, 
+    device, 
+    latent_size, 
+    batch_size, 
+    start_t, 
+    end_t, 
+    interval,
+    num_samples=1280,
+    logger=None, 
+    seed=None, 
+    **kwargs):
+    
+    global_batch_size = batch_size * dist.get_world_size()
+    total_samples = int(math.ceil(num_samples / global_batch_size) * global_batch_size)
+    samples_needed_this_gpu = int(total_samples // dist.get_world_size())
+    iterations = int(samples_needed_this_gpu // batch_size)
+    if rank == 0 and logger is not None:
+        logger.info(f"Total number of images that will be sampled: {total_samples}")
+        logger.info(f'sample needed :{samples_needed_this_gpu}, iterations: {iterations}')
+    
+    save_indices = list(range(start_t, end_t, interval))[::-1]
+    os.makedirs(save_dir, exist_ok=True)
+    for t in save_indices:
+        os.makedirs(os.path.join(save_dir, 'fake', f'{t:04d}'), exist_ok=True)
+        
+    total = 0
+    pbar = range(iterations)
+    pbar = tqdm(pbar) if rank == 0 else pbar
+    seed_count = 0
+    with torch.no_grad():
+        for _ in pbar:
+            if seed is not None:
+                torch.manual_seed(seed + rank + seed_count * dist.get_world_size())
+                seed_count += 1
+            samples = torch.randn((batch_size, 4, latent_size, latent_size)).to(device)
+            indices = list(range(start_t, diffusion.num_timesteps))[::-1]
+            for t in indices:
+                samples = diffusion.p_sample_loop_progressive_step(
+                    model = model.forward, 
+                    shape = samples.shape, 
+                    t = t, 
+                    samples=samples, 
+                    clip_denoised = False, 
+                    device = device
+                )
+            
+                if t in save_indices:
+                    images = vae.decode(samples / 0.18215).sample
+                    images = images.permute(0, 2, 3, 1).to("cpu").numpy()
+
+                    for i, img in enumerate(images):
+                        index = i + rank * batch_size + total
+                        if index >= num_samples:
+                            return
+                        img = (img + 1) / 2
+                        imageio.imwrite(os.path.join(save_dir, 'fake', f'{t:04d}', f'{index:05d}.tiff'), img)
+                    
+            total += global_batch_size
+            
 #################################################################################
 #                                  Training Loop                                #
 #################################################################################
 
-def main(args):
-    """
-    Trains a new DiT model.
-    """
-    assert torch.cuda.is_available(), "Training currently requires at least one GPU."
-
-    # Setup DDP:
-    dist.init_process_group("nccl") # backend: NVIDIA Collective Communications Library（NCCL）
-    assert args.global_batch_size % dist.get_world_size() == 0, f"Batch size must be divisible by world size."
-    rank = dist.get_rank()
-    device = rank % torch.cuda.device_count()
-    seed = args.global_seed * dist.get_world_size() + rank
-    torch.manual_seed(seed)
-    torch.cuda.set_device(device)
-    print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
-
-    # Create model:
-    train_steps = 0
-    assert args.image_size % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
-    latent_size = args.image_size // 8
-    
-    model = DiT_Uncondition_models[args.model](
-        input_size=latent_size
-    )
-    ema = deepcopy(model).to(device)
-    requires_grad(ema, False)
-    ema.eval()
-    
-    vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
-    diffusion = create_diffusion(str(args.num_sampling_steps))  # default: 1000 steps, linear noise schedule
-    
-    # Resume training: continue ckpt args.resume
-    if args.resume:
-        if not os.path.isfile(args.resume):
-            raise ValueError(f'checkpoint dir not exist: {args.resume}')
-        if rank ==0: print("=> loading checkpoint '{}'".format(args.resume))
-        checkpoint = torch.load(args.resume, map_location=torch.device(f'cuda:{device}'))
-
-        if args.load_ema:
-            model.load_state_dict(checkpoint["ema"])
-            if rank ==0: print(f"=> loaded ema checkpoint {args.resume}")   
-        else:
-            model.load_state_dict(checkpoint["model"])
-            if rank ==0: print(f"=> loaded non-ema checkpoint {args.resume}")
-        
-        ema.load_state_dict(checkpoint["ema"])
-        del checkpoint
-    
-    # DataParrallel
-    model = DDP(model.to(device), device_ids=[rank]) 
-    
-    # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
-    dif_opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
-    
+def build_logger(args, rank):
     # Setup an experiment folder:
     exp_name = args.experiment_name
     if rank == 0:
-        if args.data_path.endswith('/'):
-            args.data_path = args.data_path[:-1]
-        dataset_name = args.data_path.split('/')[-1]
-        experiment_index = len(glob(f"{args.results_dir}/{exp_name}-{dataset_name}*"))
+        if args.data_dir.endswith('/'):
+            args.data_dir = args.data_dir[:-1]
+        dataset_name = args.data_dir.split('/')[-1]
         model_string_name = args.model.replace("/", "-")  # e.g., DiT-XL/2 --> DiT-XL-2 (for naming folders)
-        experiment_dir = f"{args.results_dir}/{exp_name}-{dataset_name}-{experiment_index:03d}-{model_string_name}"  # Create an experiment folder
+        pacific = pytz.timezone('America/Los_Angeles')
+        pacific_time = datetime.now(pacific)
+        formatted_time = pacific_time.strftime("%Y%m%d%H%M")
+        experiment_dir = f"{args.results_dir}/{formatted_time}-{exp_name}-{dataset_name}-{model_string_name}" 
         os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
         os.makedirs(experiment_dir, exist_ok=True)
         logger = create_logger(experiment_dir)
         logger.info('------------------------------------------')
         logger.info(f'Build model: {args.model}')
-        logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
         logger.info(f"Experiment directory created at {experiment_dir}")
         logger.info("Arguments:")
         for k, v in vars(args).items():
@@ -196,110 +193,283 @@ def main(args):
         logger.info('------------------------------------------')
     else:
         logger = create_logger(None)
-    
+    return experiment_dir, logger
+
+def build_discriminator(args, device, latent_size, rank, logger):
+    if args.discriminator == 'resnet': #[batchsize, 2048]
+        discriminator = ResNet(resolution=latent_size, num_classes=1000)
+        discriminator.resnet.fc = nn.Linear(discriminator.resnet.fc.in_features, 1)
+        discriminator = discriminator.to(device)
+    elif args.model == 'condition_resnet':
+        discriminator = ConditionResNet(input_size=latent_size, class_num=1)
+    else:
+        raise ValueError(f'{args.discriminator} is not supported.')
+
+    # Load discriminator ckpt
     discriminator_ckpt = None
     if args.discriminator_ckpt:
         if not os.path.isfile(args.discriminator_ckpt):
             raise ValueError(f'discriminator checkpoint dir does not exist: {args.discriminator_ckpt}.')
 
-        discriminator_ckpt = torch.load(args.discriminator_ckpt, map_location=torch.device(f'cuda:{device}'))        
-        
+        discriminator_ckpt = torch.load(args.discriminator_ckpt, map_location=torch.device(f'cpu'))        
+        discriminator.load_state_dict(discriminator_ckpt['model'])
+        del discriminator_ckpt
         if rank==0:
             logger.info("=> load encoder checkpoint '{}'".format(args.discriminator_ckpt))
+
+    return discriminator
+
+def sample_discriminator_training_data(sample_dir, model, diffusion, vae, logger, rank, seed, device, latent_size, batch_size, args):
+    
+    with torch.no_grad():
+        model.eval()
+        generate_p_sequence_samples(
+            model=model,
+            diffusion=diffusion,
+            vae=vae, 
+            logger=logger,
+            save_dir = sample_dir,
+            rank=rank, 
+            seed=seed,
+            device=device, 
+            latent_size=latent_size,
+            batch_size=batch_size,
+            start_t=args.start_t,
+            end_t = args.end_t,
+            interval = args.interval,
+            num_samples=args.num_samples, 
+            )
+
+        generate_q_sequence_samples(
+            vae=vae,
+            device=device,
+            diffusion=diffusion,
+            seed=seed,
+            logger=logger,
+            save_dir = sample_dir, 
+            rank=rank, 
+            batch_size=batch_size,
+            start_t=args.start_t,
+            end_t = args.end_t,
+            interval = args.interval,
+            num_samples=args.num_samples, 
+            data_dir=args.data_dir,
+            )
         
-    if args.discriminator == 'resnet': #[batchsize, 2048]
-        discriminator = ResNet(resolution=latent_size, num_classes=1000)
-        discriminator.resnet.fc = nn.Linear(discriminator.resnet.fc.in_features, 2)
-        discriminator = discriminator.to(device)
-        if args.discriminator_ckpt:
-            discriminator.load_state_dict(discriminator_ckpt['model'])
-            del discriminator_ckpt
-            if rank==0:
-                logger.info(f"=> load discriminator state_dict")
+def main(args):
+    assert torch.cuda.is_available(), "Training currently requires at least one GPU."
+    dist.init_process_group("nccl") # backend: NVIDIA Collective Communications Library（NCCL）
+    assert args.global_batch_size % dist.get_world_size() == 0, f"Batch size must be divisible by world size."
+    batch_size=int(args.global_batch_size // dist.get_world_size())
+    rank = dist.get_rank()
+    if args.use_seed:
+        seed = args.global_seed * dist.get_world_size() + rank
+        torch.manual_seed(seed)  
     else:
-        raise ValueError(f'{args.discriminator} is not supported.')
-
-    requires_grad(discriminator, False)
-    discriminator.eval()
-    
+        seed = None
+        
+    device = rank % torch.cuda.device_count()
+    torch.cuda.set_device(device)
+    print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
+    experiment_dir, logger = build_logger(args, rank)
+        
     # Setup data:
-    transform = transforms.Compose([
-        transforms.Lambda(lambda pil_image: center_crop_arr(pil_image, args.image_size)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
-    ])
+    sampler, loader = get_sampler_and_loader(args, args.data_dir, rank, logger)
+    data_iter = itertools.cycle(loader)
+    # Create model:
+    assert args.image_size % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
+    latent_size = args.image_size // 8
     
-    dataset = ImageFolder(args.data_path, transform=transform)
-    sampler = DistributedSampler(
-        dataset,
-        num_replicas=dist.get_world_size(),
-        rank=rank,
-        shuffle=True,
-        seed=args.global_seed 
-    )
+    vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
+    diffusion = create_diffusion(str(args.num_sampling_steps))  # default: 1000 steps, linear noise schedule
     
-    loader = DataLoader(
-        dataset,
-        batch_size=int(args.global_batch_size // dist.get_world_size()),
-        shuffle=False,
-        sampler=sampler,
-        num_workers=args.num_workers,
-        pin_memory=True,
-        drop_last=True
+    model = DiT_Uncondition_models[args.model](
+        input_size=latent_size
     )
-    logger.info(f"Dataset contains {len(dataset):,} images ({args.data_path})")
+    ema = deepcopy(model).to(device)
+    # Resume training: continue ckpt args.resume
+    if args.resume:
+        if not os.path.isfile(args.resume):
+            raise ValueError(f'checkpoint dir not exist: {args.resume}')
+        if rank ==0: print("=> loading checkpoint '{}'".format(args.resume))
+        checkpoint = torch.load(args.resume, map_location=torch.device(f'cpu'))
 
+        model.load_state_dict(checkpoint["model"])
+        ema.load_state_dict(checkpoint["ema"])
+        del checkpoint
+    
+    # DataParrallel
+    model = DDP(model.to(device), device_ids=[rank]) 
+    requires_grad(ema, False)
+    ema.eval()
+    
+    # Build discriminator
+    discriminator = build_discriminator(args, device, latent_size, rank, logger)
+
+    # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
+    diffusion_optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
+    disciminator_optimizer= torch.optim.AdamW(discriminator.parameters(), lr=1e-4, weight_decay=0)
+    gan_loss_func = nn.BCELoss()
+    sample_indices = list(range(args.start_t, args.end_t, args.interval))
+    
     # Variables for monitoring/logging purposes:
-    train_steps = 0
-    log_steps = 0
-    epoch_steps = 0
-    dif_running_loss = 0
-    gan_running_loss = 0
-    running_loss = 0
-    
-    gan_loss_func = nn.CrossEntropyLoss()
-    correct = 0
-    total = 0
-    epoch_correct = 0
-    epoch_total = 0
-    epoch_loss = 0.0
-    epoch_dif_loss = 0.0
-    epoch_gan_loss = 0.0
-    
-    
-    logger.info(f"Total step number: {args.total_steps}.")
-    start_time = time.time()
-    for epoch in count(args.start_epoch):
+    iteration = 10
+    for iter in range(iteration):
+        logger.info(f"-----------------------------------------")
+        logger.info(f"Beginning iteration {iter}...")
+        
+        # sample real and fake data
+        logger.info(f"Tteration {iter}: Sampling...")
+        sample_dir = os.path.join(args.save_dir, f'iter{iter}')
+        sample_discriminator_training_data(sample_dir, model, diffusion, vae, logger, rank, seed, device, latent_size, batch_size, args)
+        
+        # Train Discriminator
+        logger.info(f"-----------------------------------------")
+        logger.info(f"Tteration {iter}: Train Discriminator...")
+        running_loss = 0.0
+        iter_correct = 0
+        iter_total = 0
+        iter_loss = 0.0
+        
+        discriminator.train()
+        requires_grad(discriminator, True)
+        real_loader = get_sampler_and_loader(args, os.path.join(sample_dir, "real"), rank, logger)
+        fake_loader = get_sampler_and_loader(args, os.path.join(sample_dir, "fake"), rank, logger)
+        real_data_iter = itertools.cycle(real_loader)
+        fake_data_iter = itertools.cycle(fake_loader)
+        logger.info(f"Total step number: {args.total_steps}.")
+        start_time = time.time()
+        for step in range(args.dis_total_steps+1):
+            real, real_t = next(real_data_iter)
+            fake, fake_t = next(fake_data_iter)
+            if step % len(real_loader) == 0 and step != 0:
+                sampler.set_epoch(step // len(real_loader))
+                logger.info(f'Epoch: {step // len(real_loader)} Step: {step}')
+            with torch.no_grad():
+                real = vae.encode(real.to(device)).latent_dist.sample().mul_(0.18215)
+                fake = vae.encode(fake.to(device)).latent_dist.sample().mul_(0.18215)
+            real_preds = discriminator(real, real_t)
+            fake_preds = discriminator(fake, fake_t)
+            real_loss = gan_loss_func(real_preds, torch.ones(real_preds.shape[0], device=device))
+            fake_loss = gan_loss_func(fake_preds, torch.zeros(fake_preds.shape[0], device=device))
+            loss = real_loss + fake_loss
+            disciminator_optimizer.zero_grad()
+            loss.backward()
+            disciminator_optimizer.step()
+
+            running_loss += loss.item()
+            iter_loss += loss.item()
+            total = real_preds.shape[0] + fake_preds.shape[0]
+            iter_total += real_preds.shape[0] + fake_preds.shape[0]
+            real_count = ((real_preds >= 0.5) == 1).sum().item()
+            fake_count = ((fake_preds < 0.5) == 0).sum().item()
+            correct = real_count + fake_count
+            iter_correct += real_count + fake_count
+            
+            if step % args.log_every_step == 0:
+                log_steps += args.log_every_step
+                # Measure training speed:
+                torch.cuda.synchronize()
+                end_time = time.time()
+                steps_per_sec = log_steps / (end_time - start_time)
+                # Reduce loss history over all processes:
+                avg_loss = torch.tensor(running_loss / log_steps, device=device)
+                dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
+                avg_loss = avg_loss.item() / dist.get_world_size()
+
+                correct = torch.tensor(correct, device=device)
+                dist.all_reduce(correct, op=dist.ReduceOp.SUM)
+                correct = correct.item()
+                total = torch.tensor(total, device=device)
+                dist.all_reduce(total, op=dist.ReduceOp.SUM)
+                total = total.item()
+                
+                if rank == 0:
+                    logger.info(f"(step={step:07d}) Discriminator Loss: {avg_loss:.4f} GAN acc={(correct/total):.3f} ({correct}/{total}), Train Steps/Sec: {steps_per_sec:.2f} ")
+                
+                # Reset monitoring variables:
+                running_loss = 0
+                correct = 0
+                total = 0
+                start_time = time.time()
+        
+        avg_loss = torch.tensor(iter_loss / (args.dis_total_steps+1), device=device)
+        dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
+        avg_loss = avg_loss.item() / dist.get_world_size()
+
+        correct = torch.tensor(iter_correct, device=device)
+        dist.all_reduce(correct, op=dist.ReduceOp.SUM)
+        correct = correct.item()
+        total = torch.tensor(iter_total, device=device)
+        dist.all_reduce(total, op=dist.ReduceOp.SUM)
+        total = total.item()
+        
+        if rank == 0:
+            checkpoint = {"model": discriminator.module.state_dict()}
+            checkpoint_dir = os.path.join(experiment_dir, 'discriminator_checkpoints')
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            checkpoint_path_fin = os.path.join(checkpoint_dir, f'{step:06d}.pt')
+            torch.save(checkpoint, checkpoint_path_fin)
+            logger.info(f"Saved discriminator checkpoint to {checkpoint_path_fin}")
+            
+            logger.info(f"(Iteration={iter}) Discriminator Loss: {avg_loss:.4f} GAN acc={(correct/total):.3f} ({correct}/{total}), Train Steps/Sec: {steps_per_sec:.2f} ")
+
+        log_steps = 0
+        dif_running_loss = 0
+        gan_running_loss = 0
+        running_loss = 0
+        
+        correct = 0
+        total = 0
+        iter_correct = 0
+        iter_total = 0
+        iter_loss = 0.0
+        iter_dif_loss = 0.0
+        iter_gan_loss = 0.0
+        
         model.train()
-        sampler.set_epoch(epoch)
-        logger.info(f"Beginning epoch {epoch}...")
-        for x, _ in loader:
+        discriminator.eval()
+        requires_grad(discriminator, False)
+        logger.info(f"Total step number: {args.total_steps}.")
+        
+        start_time = time.time()
+        for step in range(args.total_steps+1):
+            x, _ = next(data_iter)
             x = x.to(device)
+            
+            if step % len(loader) == 0 and step != 0:
+                sampler.set_epoch(step // len(loader))
+                logger.info(f'Epoch: {step // len(loader)} Step: {step}')
+            
             labels = torch.ones((x.size(0)), dtype=torch.int64, requires_grad = False).to(device)
             # train diffusion model 
             with torch.no_grad():
                 # Map input images to latent space + normalize latents:
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
-                
-            t = torch.randint(0, args.start_step, (x.shape[0],), device=device)
-            loss_dict = diffusion.training_losses_step_output_v1(model, x, t)
-            pred_x = loss_dict["pred"]
-            dif_loss = loss_dict["loss"].mean()
             
-            dis_preds = discriminator(pred_x)#extract_resnet_perceptual_outputs_v0(encoder, pred)
-
+            t = random.sample(sample_indices, (x.shape[0],))
+            t = torch.tensor(t, device=device)
+            
+            loss_dict = diffusion.training_losses_output_xt(model, x, t)
+            pred_x = loss_dict["pred"]
+            
+            dis_preds = discriminator(pred_x, t)#extract_resnet_perceptual_outputs_v0(encoder, pred)
             gan_loss = gan_loss_func(dis_preds, labels)
-            _, pred_labels = torch.max(dis_preds.data, -1)
+            
+            pred_labels = dis_preds >= 0.5
             total += labels.size(0)
             correct += (pred_labels == labels).sum().item()
-            epoch_total += labels.size(0)
-            epoch_correct += (pred_labels == labels).sum().item()
+            iter_total += labels.size(0)
+            iter_correct += (pred_labels == labels).sum().item()
+            
+            t = torch.randint(0, args.num_sampling_steps, (x.shape[0],), device=device)
+            loss_dict = diffusion.training_losses(model, x, t)
+            dif_loss = loss_dict["loss"].mean()
             
             loss = dif_loss + args.alpha * gan_loss
-            dif_opt.zero_grad()
+            diffusion_optimizer.zero_grad()
             loss.backward()
-            dif_opt.step()
+            diffusion_optimizer.step()
             
             update_ema(ema, model.module)
             # Log loss values:
@@ -307,14 +477,12 @@ def main(args):
             gan_running_loss += gan_loss.item()
             running_loss += loss.item()
 
-            epoch_loss += loss.item()
-            epoch_dif_loss += dif_loss.item()
-            epoch_gan_loss += gan_loss.item()
+            iter_loss += loss.item()
+            iter_dif_loss += dif_loss.item()
+            iter_gan_loss += gan_loss.item()
             
-            epoch_steps += 1
-            log_steps += 1
-            train_steps += 1
-            if train_steps % args.log_every_step == 0:
+            if step % args.log_every_step == 0:
+                log_steps += args.log_every_step
                 # Measure training speed:
                 torch.cuda.synchronize()
                 end_time = time.time()
@@ -340,7 +508,7 @@ def main(args):
                 total = total.item()
                 
                 if rank == 0:
-                    logger.info(f"(step={train_steps:07d}) Loss: {avg_loss:.4f} Dif_Loss: {dif_avg_loss:.4f}, GAN_Loss: {args.alpha * gan_avg_loss:.4f}, GAN acc={(correct/total):.3f} ({correct}/{total}), Train Steps/Sec: {steps_per_sec:.2f} ")
+                    logger.info(f"(step={step:07d}) Loss: {avg_loss:.4f} Dif_Loss: {dif_avg_loss:.4f}, GAN_Loss: {args.alpha * gan_avg_loss:.4f}, GAN acc={(correct/total):.3f} ({correct}/{total}), Train Steps/Sec: {steps_per_sec:.2f} ")
                 
                 # Reset monitoring variables:
                 running_loss = 0
@@ -352,54 +520,50 @@ def main(args):
                 start_time = time.time()
 
             # Save DiT checkpoint:
-            
-            if train_steps % args.ckpt_every_step == 0 or train_steps == args.total_steps -1 or train_steps==1:
+            if step % args.ckpt_every_step == 0:
                 if rank == 0:
                     checkpoint = {
                         "model": model.module.state_dict(),
-                        "d_opt": dif_opt.state_dict(),
-                        "epoch":epoch+1,
+                        "d_opt": diffusion_optimizer.state_dict(),
                         "args": args,
                         "experiment_dir":experiment_dir,
-                        "train_steps": train_steps,
+                        "train_steps": step,
                         "ema": ema.state_dict(),
                     }
                     
                     checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
                     os.makedirs(checkpoint_dir, exist_ok=True)
-                    checkpoint_path_fin = os.path.join(checkpoint_dir, f'{train_steps:08d}.pt')
+                    checkpoint_path_fin = os.path.join(checkpoint_dir, f'{step:08d}.pt')
                     torch.save(checkpoint, checkpoint_path_fin)
                     logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
             
-            if train_steps >= args.total_steps:
-                logger.info("Done!")
-                return
+        iter_correct = torch.tensor(iter_correct, device=device)
+        dist.all_reduce(iter_correct, op=dist.ReduceOp.SUM)
+        iter_correct = iter_correct.item()
+        iter_total = torch.tensor(iter_total, device=device)
+        dist.all_reduce(iter_total, op=dist.ReduceOp.SUM)
+        iter_total = iter_total.item()
         
-        epoch_correct = torch.tensor(epoch_correct, device=device)
-        dist.all_reduce(epoch_correct, op=dist.ReduceOp.SUM)
-        epoch_correct = epoch_correct.item()
-        epoch_total = torch.tensor(epoch_total, device=device)
-        dist.all_reduce(epoch_total, op=dist.ReduceOp.SUM)
-        epoch_total = epoch_total.item()
-        
-        logger.info(f"(Epoch {epoch}) step={train_steps:07d} Loss: {epoch_loss/epoch_steps:.4f} Dif_Loss: {epoch_dif_loss/epoch_steps:.4f}, GAN_Loss: {args.alpha * epoch_gan_loss/epoch_steps:.4f}, GAN acc={(epoch_correct/epoch_total):.3f} ({epoch_correct}/{epoch_total})")
-        epoch_correct = 0
-        epoch_total = 0
-        epoch_loss = 0.0
-        epoch_dif_loss = 0.0
-        epoch_gan_loss = 0.0
-        epoch_steps = 0
+        logger.info(f"(Iteration {iter}) step={step:07d} Loss: {iter_loss/iter_steps:.4f} Dif_Loss: {iter_dif_loss/iter_steps:.4f}, GAN_Loss: {args.alpha * iter_gan_loss/step:.4f}, GAN acc={(iter_correct/iter_total):.3f} ({iter_correct}/{iter_total})")
+        iter_correct = 0
+        iter_total = 0
+        iter_loss = 0.0
+        iter_dif_loss = 0.0
+        iter_gan_loss = 0.0
+        iter_steps = 0
         dist.barrier()
-
+        
+            
 if __name__ == "__main__":
     # Default args here will train DiT-XL/2 with the hyperparameters we used in our paper (except training iters).
     parser = argparse.ArgumentParser()
     parser.add_argument("--experiment_name", type=str, default="gan_pipeline_end_to_end")
-    parser.add_argument("--data_path", type=str, required=True)
+    parser.add_argument("--data_dir", type=str, required=True)
     parser.add_argument("--results-dir", type=str, default="results")
     parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-B/4")
     parser.add_argument("--image_size", type=int, choices=[128, 224, 256, 512], default=256)
     parser.add_argument("--total_steps", type=int, default=100000)
+    parser.add_argument("--dis_total_steps", type=int, default=1000)
     parser.add_argument("--global_batch_size", type=int, default=256)
     parser.add_argument("--global_seed", type=int, default=0)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema") 
@@ -407,8 +571,13 @@ if __name__ == "__main__":
     parser.add_argument("--log_every_step", type=int, default=20)
     parser.add_argument("--ckpt_every_step", type=int, default=10000)
     parser.add_argument("--num_sampling_steps", type=int, default=1000)
-    parser.add_argument("--start_step", type=int, default=50)
-    parser.add_argument('--load_ema', type=str2bool, default=False)
+    # synthesis data
+    parser.add_argument("--num_samples", type=int, default=128)
+    parser.add_argument("--start_t", type=int, default=0)
+    parser.add_argument("--end_t", type=int, default=50)
+    parser.add_argument("--interval", type=int, default=100)
+    
+    parser.add_argument('--use_seed', type=str2bool, default=True)
     parser.add_argument(
         "--resume",
         default="",
@@ -425,7 +594,7 @@ if __name__ == "__main__":
     )
     
     parser.add_argument("--alpha", type=float, default=0.2)
-    parser.add_argument("--discriminator", type=str, default="resnet", choices=['mlpmixer', 'biggan', 'resnet'])
+    parser.add_argument("--discriminator", type=str, default="condition_resnet", choices=['mlpmixer', 'condition_resnet', 'resnet'])
     parser.add_argument(
         "--discriminator_ckpt",
         default="",

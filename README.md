@@ -92,6 +92,8 @@ torchrun --nnodes=1 --nproc_per_node=8 src/sample_t_sequence.py --checkpoint_dir
 torchrun --nnodes=1 --nproc_per_node=4 src/sample_t_sequence.py --checkpoint_dir results/baseline-celebahq256-000-DiT_Uncondition-B-4/checkpoints/00200000.pt --num_samples 128 --start_t 0 --end_t 1000 --interval 100 --load_ema False --use_seed True
 ```
 
+torchrun --nnodes=1 --nproc_per_node=4 src/gd_sample_one_model_one_t.py --checkpoint_dir pretrained_models/256x256_diffusion_uncond.pt
+
 ### Memory requirement:
 DiT_Uncondition-S-4:6242
 DiT_Uncondition-B-4: 12178
