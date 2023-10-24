@@ -157,11 +157,11 @@ def main(args):
         if args.use_ema:
             model.load_state_dict(ckpt["ema"])
             if rank == 0:
-                print("=> loaded ema checkpoint (epoch {})".format(ckpt["epoch"]))
+                print("=> loaded ema checkpoint")
         else:
             model.load_state_dict(ckpt["model"])
             if rank == 0:
-                print("=> loaded checkpoint (epoch {})".format(ckpt["epoch"]))
+                print("=> loaded checkpoint")
         
         del ckpt
         ckpt = None

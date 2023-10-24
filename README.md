@@ -10,24 +10,13 @@ conda activate DiT
 
 ### Train baseline DiT:
 GPU: Nvidia A4500 10G * 4
-example: use DiT_Uncondition-B/4 backbone and ffhq1k dataset
+example: use DiT_Uncondition-B/4 backbone and celebhq256 dataset
+```bash
+torchrun --nnodes=1 --nproc_per_node=4 src/train_baseline_dit.py --model DiT_Uncondition-B/4 --data_path datasets/celebahq256 --image-size 256 --total_steps 400000 --ckpt_every_step 10000  --global-batch-size 128 --use_ema True 
+```
+Resume checkpoint:
 ```bash
 torchrun --nnodes=1 --nproc_per_node=4 src/train_baseline_dit.py --model DiT_Uncondition-B/4 --data_path datasets/celebahq256 --image-size 256 --total_steps 400000 --ckpt_every_step 10000  --global-batch-size 128 --use_ema True --resume results/baseline-celebahq256-000-DiT_Uncondition-B-4/checkpoints/00200000.pt
-```
-
-### Train DiT with ResNet perceptual loss:
-
-```bash
-torchrun --nnodes=1 --nproc_per_node=8 src/train_dit_perceptual_loss.py --model DiT_Uncondition-B/4 --data_path datasets/celebahq256/  --image-size 256 --total_steps 100000 --ckpt_every_step 10000 --global-batch-size 8 --use_ema True --perceptual_encoder resnet --encoder_ckpt encoder_ckpts/resnet00000070.pt --resume results/baseline-celebahq256-000-DiT_Uncondition-B-4/checkpoints/00200000.pt --alpha 1
-```
-### Train DiT with ResNet perceptual loss end to end:
-```bash
-torchrun --nnodes=1 --nproc_per_node=8 src/train_dit_end_to_end_perceptual.py --model DiT_Uncondition-B/4 --data_path datasets/celebahq256/  --image_size 256 --total_steps 20000 --ckpt_every_step 1000 --global_batch_size 128 --load_ema False --start_step 50 --perceptual_encoder resnet --encoder_ckpt encoder_ckpts/resnet00000070.pt --resume results/baseline-celebahq256-000-DiT_Uncondition-B-4/checkpoints/00200000.pt --alpha 0.5
-```
-
-
-```bash
-torchrun --nnodes=1 --nproc_per_node=8 src/train_dit_perceptual_loss.py --model DiT_Uncondition-B/4 --data_path datasets/celebahq256old/  --image-size 256 --total_steps 233770 --ckpt_every_step 11500 --global-batch-size 128 --use_ema True --perceptual_encoder resnet --encoder_ckpt encoder_ckpts/resnet00000070.pt --resume pretrained_models/DiT-B-4-celebahqold256/0001500.pt --alpha 0.5
 ```
 
 ### Sample images for fid evaluation:
@@ -41,16 +30,15 @@ example: the trained example above and lfw dataset
 python src/eval.py --experiment_dir results/perceptual_end_to_end-celebahq256-004-DiT_Uncondition-B-4/ --train_set_dir datasets/celebahq256/ --sample_folder_name fid_samples --output_file_name 'eval_scores.xlsx' --cal_kid False
 ```
 
-```bash
-CUDA_VISIBLE_DEVICES=3 torchrun --nnodes=1 --nproc_per_node=1 --master_port 29502 src/fid_sample.py --experiment_dir results/perceptual_end_to_end-celebahq256-005-DiT_Uncondition-B-4/ --ckpt_folder epoch_checkpoints --save_dir epoch_fid_samples --model DiT_Uncondition-B/4 --fid_samples 100 --image-size 256 --global-batch-size 128 --num_sampling_steps 1000 --use_ema False
-```
-
-# GAN
 ### Sample images from a DiT model.   
 from num_sampling_steps to end_step
 ```bash
 torchrun --nnodes=1 --nproc_per_node=8 src/sample_one_model.py --checkpoint_dir results/baseline-celebahq256-000-DiT_Uncondition-B-4/checkpoints/00200000.pt --save_dir celebahq256_50step --model DiT_Uncondition-B/4 --fid_samples 30000 --image-size 256 --global-batch-size 128 --num_sampling_steps 1000 --use_ema True --end_step 50
 ```
+
+
+# GAN
+
 ### train_discriminator.py
 ```bash
 torchrun --nnodes=1 --nproc_per_node=8 src/train_discriminator.py --model resnet --data_path datasets/gan_data/ --image_size 256 --epochs 1000 --global_batch_size 256 --log_every_step 100 --ckpt_every_epoch 10
@@ -94,7 +82,7 @@ torchrun --nnodes=1 --nproc_per_node=4 src/sample_t_sequence.py --checkpoint_dir
 
 # gan_pipeline_end_to_end.py
 ```bash
-torchrun --nnodes=1 --nproc_per_node=4 src/gan_pipeline_end_to_end.py --model DiT_Uncondition-B/4 --data_dir datasets/celebahq256/  --image_size 256 --total_steps 1000 --dis_total_steps 100 --global_batch_size 64 --ckpt_every_step 100 --iteration_num 3 --num_samples 128 --start_t 0 --end_t 10 --interval 1 --discriminator condition_resnet --resume results/baseline-celebahq256-000-DiT_Uncondition-B-4/checkpoints/00200000.pt --alpha 0.5
+torchrun --nnodes=1 --nproc_per_node=4 src/gan_pipeline_end_to_end.py --model DiT_Uncondition-B/4 --data_dir datasets/celebahq256/  --image_size 256 --total_steps 20000 --dis_total_steps 2000 --global_batch_size 96 --ckpt_every_step 10000 --iteration_num 10 --num_samples 1280 --start_t 0 --end_t 50 --interval 1 --discriminator condition_resnet --resume results/baseline-celebahq256-000-DiT_Uncondition-B-4/checkpoints/00200000.pt --alpha 0.1
 ```
 
 torchrun --nnodes=1 --nproc_per_node=4 src/gd_sample_one_model_one_t.py --checkpoint_dir pretrained_models/256x256_diffusion_uncond.pt
@@ -109,3 +97,8 @@ batch_size 2 per GPU: 8244
 batch_size 6 per GPU: 19192
 
 DiT baseline: 4 GPU 384 resume 320
+
+
+```bash
+CUDA_VISIBLE_DEVICES=3 torchrun --nnodes=1 --nproc_per_node=1 --master_port 29502 src/fid_sample.py --experiment_dir results/perceptual_end_to_end-celebahq256-005-DiT_Uncondition-B-4/ --ckpt_folder epoch_checkpoints --save_dir epoch_fid_samples --model DiT_Uncondition-B/4 --fid_samples 100 --image-size 256 --global-batch-size 128 --num_sampling_steps 1000 --use_ema False
+```

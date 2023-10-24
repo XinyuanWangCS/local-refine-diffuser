@@ -10,6 +10,59 @@ import numpy as np
 from collections import OrderedDict
 from torchvision import transforms
 
+import os
+import torch
+from torch.utils.data import Dataset
+from torchvision.datasets.folder import make_dataset
+from torchvision.datasets.folder import IMG_EXTENSIONS
+import tifffile
+
+class TiffFolder(Dataset):
+    def __init__(self, root, transform=None, target_transform=None, loader=None, is_valid_file=None):
+        super(TiffFolder, self).__init__()
+        self.root = root
+        self.transform = transform
+        self.target_transform = target_transform
+        self.loader = loader if loader is not None else self._tiff_loader
+        self.extensions = IMG_EXTENSIONS if is_valid_file is None else None
+        self.is_valid_file = is_valid_file
+
+        classes, class_to_idx = self._find_classes(self.root)
+        samples = make_dataset(self.root, class_to_idx, self.extensions, self.is_valid_file)
+        if len(samples) == 0:
+            raise RuntimeError(f"Found 0 files in subfolders of: {self.root}\nSupported extensions are: {','.join(IMG_EXTENSIONS)}")
+
+        self.classes = classes
+        self.class_to_idx = class_to_idx
+        self.samples = samples
+        self.targets = [s[1] for s in samples]
+
+    def _find_classes(self, dir):
+        """
+        Finds the class folders in a dataset.
+        """
+        classes = [d.name for d in os.scandir(dir) if d.is_dir()]
+        classes.sort()
+        class_to_idx = {cls_name: i for i, cls_name in enumerate(classes)}
+        return classes, class_to_idx
+
+    def _tiff_loader(self, path: str) -> torch.Tensor:
+        return tifffile.imread(path)
+
+    def __getitem__(self, index: int):
+        path, target = self.samples[index]
+        sample = self.loader(path)
+        if self.transform is not None:
+            sample = self.transform(sample)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return sample, target
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+
 def build_logger(args, rank):
     # Setup an experiment folder:
     exp_name = args.experiment_name

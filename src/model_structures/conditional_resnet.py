@@ -71,5 +71,4 @@ class ConditionResNet(nn.Module):
         
         x = torch.flatten(x, 1)
         x = self.fc(x)
-        x = self.sigmoid(x)
         return x
