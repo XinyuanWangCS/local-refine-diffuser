@@ -287,7 +287,7 @@ def main(args):
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
     
     experiment_dir, logger = build_logger(args, rank)
-        
+    dist.barrier()
     # Setup data:
     sampler, loader = get_sampler_and_loader(args, args.data_dir, rank, logger)
     data_iter = itertools.cycle(loader)
@@ -334,6 +334,7 @@ def main(args):
         logger.info(f"Iteration {iter}: Sampling...")
         sample_dir = os.path.join(experiment_dir, "samples", f'iter{iter}')
         sample_discriminator_training_data(sample_dir, model, diffusion, vae, logger, rank, seed, device, latent_size, batch_size, args)
+        dist.barrier()
         
         # Train Discriminator
         logger.info(f"Iteration {iter}: Train Discriminator...")
@@ -374,13 +375,7 @@ def main(args):
                 fake = vae.encode(fake.to(device)).latent_dist.sample().mul_(0.18215)
             real_preds = discriminator(real, real_t)
             fake_preds = discriminator(fake, fake_t)
-            '''if rank ==0:
-                print('real')
-                print(real_preds)
-                print('fake')
-                print(fake_preds)'''
-            #real_loss = gan_loss_func(real_preds, torch.ones((real_preds.shape[0], 1), device=device))
-            #fake_loss = gan_loss_func(fake_preds, torch.zeros((fake_preds.shape[0], 1), device=device))
+
             real_labels = torch.ones((real_preds.shape[0]), dtype=torch.int64, device=device)
             fake_labels = torch.zeros((fake_preds.shape[0]), dtype=torch.int64, device=device)
             real_loss = gan_loss_func(real_preds, real_labels)
@@ -430,7 +425,8 @@ def main(args):
                 total = 0
                 start_time = time.time()
                 log_steps = 0
-        
+                
+        dist.barrier()
         avg_loss = torch.tensor(iter_loss / iter_steps, device=device)
         dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
         avg_loss = avg_loss.item() / dist.get_world_size()
@@ -509,11 +505,11 @@ def main(args):
             dis_preds = discriminator(pred_x, t) 
             gan_loss = gan_loss_func(dis_preds, labels)
             
-            pred_labels = dis_preds >= 0.5
             total += labels.size(0)
             iter_total += labels.size(0)
-            correct += (pred_labels == labels).sum().item()
-            iter_correct += (pred_labels == labels).sum().item()
+            correct_count = ((dis_preds >= 0.5) == 1).sum().item()
+            correct += correct_count
+            iter_correct += correct_count
             
             t = torch.randint(0, args.num_sampling_steps, (x.shape[0],), device=device)
             loss_dict = diffusion.training_losses(model, x, t)

@@ -77,7 +77,6 @@ def build_logger(args, rank):
     
     logger = None
     if rank == 0:
-        
         os.makedirs(args.results_dir, exist_ok=True)  # Make results folder (holds all experiment subfolders)
         os.makedirs(experiment_dir, exist_ok=True)
         logger = create_logger(experiment_dir, rank)

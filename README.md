@@ -82,7 +82,7 @@ torchrun --nnodes=1 --nproc_per_node=4 src/sample_t_sequence.py --checkpoint_dir
 
 # gan_pipeline_end_to_end.py
 ```bash
-torchrun --nnodes=1 --nproc_per_node=4 src/gan_pipeline_end_to_end.py --model DiT_Uncondition-B/4 --data_dir datasets/celebahq256/  --image_size 256 --total_steps 10000 --dis_total_steps 2000 --global_batch_size 96 --ckpt_every_step 5000 --iteration_num 10 --num_samples 1280 --start_t 0 --end_t 50 --interval 1 --discriminator condition_resnet --resume results/baseline-celebahq256-000-DiT_Uncondition-B-4/checkpoints/00200000.pt --alpha 0.1
+torchrun --nnodes=1 --nproc_per_node=4 src/gan_pipeline_end_to_end.py --model DiT_Uncondition-B/4 --data_dir datasets/celebahq256/  --image_size 256 --total_steps 10000 --dis_total_steps 1500 --global_batch_size 128 --ckpt_every_step 5000 --iteration_num 10 --num_samples 1280 --start_t 0 --end_t 50 --interval 1 --discriminator condition_resnet --resume results/baseline-celebahq256-000-DiT_Uncondition-B-4/checkpoints/00200000.pt --alpha 0.025
 ```
 
 torchrun --nnodes=1 --nproc_per_node=4 src/gd_sample_one_model_one_t.py --checkpoint_dir pretrained_models/256x256_diffusion_uncond.pt
