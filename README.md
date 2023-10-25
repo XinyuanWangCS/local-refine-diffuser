@@ -87,7 +87,7 @@ torchrun --nnodes=1 --nproc_per_node=4 src/gan_pipeline_end_to_end.py --model Di
 
 # gan_pipeline_end_to_end_groupt.py
 ```bash
-torchrun --nnodes=1 --nproc_per_node=4 src/gan_pipeline_end_to_end_groupt.py --model DiT_Uncondition-B/4 --data_dir datasets/celebahq256/  --image_size 256 --total_steps 10000 --dis_total_steps 1500 --global_batch_size 128 --ckpt_every_step 5000 --iteration_num 10 --num_samples 1280 --start_t 0 --end_t 200 --interval 50 --group 10 --discriminator condition_resnet --resume pretrained_models/00200000.pt --alpha 0.5
+torchrun --nnodes=1 --nproc_per_node=4 src/gan_pipeline_end_to_end_groupt.py --model DiT_Uncondition-B/4 --data_dir datasets/celebahq256/  --image_size 256 --total_steps 10000 --dis_total_steps 1500 --global_batch_size 128 --ckpt_every_step 5000 --iteration_num 10 --num_samples 1280 --start_t 0 --end_t 200 --interval 50 --group 10 --discriminator condition_resnet --resume pretrained_models/00200000.pt --alpha 0.1
 ```
 
 torchrun --nnodes=1 --nproc_per_node=4 src/gd_sample_one_model_one_t.py --checkpoint_dir pretrained_models/256x256_diffusion_uncond.pt
@@ -103,7 +103,7 @@ batch_size 6 per GPU: 19192
 
 DiT baseline: 4 GPU 384 resume 320
 
-
+# Sample examples
 ```bash
-CUDA_VISIBLE_DEVICES=3 torchrun --nnodes=1 --nproc_per_node=1 --master_port 29502 src/fid_sample.py --experiment_dir results/perceptual_end_to_end-celebahq256-005-DiT_Uncondition-B-4/ --ckpt_folder epoch_checkpoints --save_dir epoch_fid_samples --model DiT_Uncondition-B/4 --fid_samples 100 --image-size 256 --global-batch-size 128 --num_sampling_steps 1000 --use_ema False
+CUDA_VISIBLE_DEVICES=0,1,2,3  torchrun --nnodes=1 --nproc_per_node=4 --master_port 29502 src/fid_sample.py --experiment_dir results_new/10251044-gan_pipeline_end_to_end-celebahq256-DiT_Uncondition-B-4/ --model DiT_Uncondition-B/4 --fid_samples 128 --image-size 256 --global-batch-size 128 --num_sampling_steps 1000 --use_ema False
 ```

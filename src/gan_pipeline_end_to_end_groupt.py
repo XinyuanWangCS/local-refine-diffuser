@@ -617,7 +617,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--iteration_num", type=int, default=10)
-    parser.add_argument("--experiment_name", type=str, default="gan_pipeline_end_to_end")
+    parser.add_argument("--experiment_name", type=str, default="gan_pipeline_end_to_end_groupt")
     parser.add_argument("--data_dir", type=str, required=True)
     parser.add_argument("--results-dir", type=str, default="results_new")
     parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-B/4")
