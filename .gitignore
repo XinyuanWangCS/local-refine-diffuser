@@ -1,4 +1,5 @@
 pretrained_models/
+src/resnet.ipynb
 save/
 dataset/
 datasets/

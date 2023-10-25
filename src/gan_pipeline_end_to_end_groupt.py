@@ -370,6 +370,7 @@ def main(args):
             real, fake = real.to(device), fake.to(device)
             real_t, fake_t = real_t.to(device), fake_t.to(device)
             if step % len(real_loader) == 0 and step != 0:
+                print(f"training discriminator: epoch: {step // len(real_loader)}")
                 real_sampler.set_epoch(step // len(real_loader))
                 fake_sampler.set_epoch(step // len(real_loader))
                 
@@ -446,6 +447,7 @@ def main(args):
             os.makedirs(checkpoint_dir, exist_ok=True)
             checkpoint_path_fin = os.path.join(checkpoint_dir, f'iter{iter:03d}.pt')
             torch.save(checkpoint, checkpoint_path_fin)
+            del checkpoint
             logger.info(f"Saved discriminator checkpoint to {checkpoint_path_fin}")
             
             logger.info(f"(Iteration={iter}) Discriminator Loss: {avg_loss:.4f} GAN acc={(correct/total):.3f} ({correct}/{total}), Train Steps/Sec: {steps_per_sec:.2f} ")
@@ -467,24 +469,24 @@ def main(args):
         iter_total = 0
         
         model.train()
-        discriminator.eval()
         requires_grad(discriminator, False)
+        discriminator.eval()
         logger.info(f"Diffusion total step number: {args.total_steps}.")
         
         if iter==0:
-                if rank == 0:
-                    checkpoint = {
-                        "model": model.module.state_dict(),
-                        "d_opt": diffusion_optimizer.state_dict(),
-                        "train_steps": 0,
-                        "ema": ema.state_dict(),
-                    }
-                    
-                    checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
-                    os.makedirs(checkpoint_dir, exist_ok=True)
-                    checkpoint_path_fin = os.path.join(checkpoint_dir, f'iter{iter:03d}_{0:06d}.pt')
-                    torch.save(checkpoint, checkpoint_path_fin)
-                    logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
+            if rank == 0:
+                checkpoint = {
+                    "model": model.module.state_dict(),
+                    "d_opt": diffusion_optimizer.state_dict(),
+                    "train_steps": 0,
+                    "ema": ema.state_dict(),
+                }
+                
+                checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
+                os.makedirs(checkpoint_dir, exist_ok=True)
+                checkpoint_path_fin = os.path.join(checkpoint_dir, f'iter{iter:03d}_{0:06d}.pt')
+                torch.save(checkpoint, checkpoint_path_fin)
+                logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
         
         start_time = time.time()
         for step in range(args.total_steps+1):
