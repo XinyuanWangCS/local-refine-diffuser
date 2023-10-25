@@ -100,8 +100,6 @@ def generate_q_sequence_samples(
                         return
                     img = (img + 1) / 2
                     tifffile.imwrite(os.path.join(save_dir, 'real', f'{t:04d}', f'{index:05d}.tiff'), img)
-                    #imageio.imwrite(os.path.join(save_dir, 'real', f'{t:04d}', f'{index:05d}.tiff'), img)
-                
             total += global_batch_size
 
 
@@ -162,14 +160,12 @@ def generate_p_sequence_samples(
                             return
                         img = (img + 1) / 2
                         tifffile.imwrite(os.path.join(save_dir, 'fake', f'{t:04d}', f'{index:05d}.tiff'), img)
-                        #imageio.imwrite(os.path.join(save_dir, 'fake', f'{t:04d}', f'{index:05d}.tiff'), img)
-                    
             total += global_batch_size
 
 def sample_discriminator_training_data(
     sample_dir, model, diffusion, vae, logger, rank, seed, device, latent_size, batch_size, args
     ):  
-    model.eval()
+    
     with torch.no_grad():
         generate_p_sequence_samples(
             model=model,
@@ -271,7 +267,6 @@ def build_discriminator(args, device, latent_size, rank, logger):
         
     return discriminator
 
-
         
 def main(args):
     assert torch.cuda.is_available(), "Training currently requires at least one GPU."
@@ -290,7 +285,7 @@ def main(args):
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
     
     experiment_dir, logger = build_logger(args, rank)
-    dist.barrier()
+    
     # Setup data:
     sampler, loader = get_sampler_and_loader(args, args.data_dir, rank, logger)
     data_iter = itertools.cycle(loader)
@@ -327,6 +322,21 @@ def main(args):
     diffusion_optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
     disciminator_optimizer= torch.optim.AdamW(discriminator.parameters(), lr=1e-4, weight_decay=0)
     
+    if rank == 0:
+        checkpoint = {
+            "model": model.module.state_dict(),
+            "d_opt": diffusion_optimizer.state_dict(),
+            "train_steps": 0,
+            "ema": ema.state_dict(),
+        }
+        
+        checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        checkpoint_path_fin = os.path.join(checkpoint_dir, f'iter{iter:03d}_{0:06d}.pt')
+        torch.save(checkpoint, checkpoint_path_fin)
+        logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
+    dist.barrier()
+    
     # Variables for monitoring/logging purposes:
     sample_indices = sequence_t_indexes(start_t=args.start_t, end_t=args.end_t, interval=args.interval, group=args.group)
     for iter in range(args.iteration_num):
@@ -336,6 +346,7 @@ def main(args):
         # sample real and fake data
         logger.info(f"Iteration {iter}: Sampling...")
         sample_dir = os.path.join(experiment_dir, "samples", f'iter{iter}')
+        model.eval()
         sample_discriminator_training_data(sample_dir, model, diffusion, vae, logger, rank, seed, device, latent_size, batch_size, args)
         dist.barrier()
         
@@ -344,11 +355,8 @@ def main(args):
         correct = 0
         total = 0
         running_loss = 0.0
-        iter_correct = 0
-        iter_total = 0
-        iter_loss = 0.0
         log_steps = 0
-        iter_steps = 0
+        train_steps = 0
         discriminator.train()
         requires_grad(discriminator, True)
         
@@ -370,7 +378,7 @@ def main(args):
             real, fake = real.to(device), fake.to(device)
             real_t, fake_t = real_t.to(device), fake_t.to(device)
             if step % len(real_loader) == 0 and step != 0:
-                print(f"training discriminator: epoch: {step // len(real_loader)}")
+                logger.info(f"training discriminator: epoch: {step // len(real_loader)}")
                 real_sampler.set_epoch(step // len(real_loader))
                 fake_sampler.set_epoch(step // len(real_loader))
                 
@@ -388,22 +396,17 @@ def main(args):
             disciminator_optimizer.zero_grad()
             loss.backward()
             disciminator_optimizer.step()
-            
-            iter_steps += 1
-            
-            running_loss += loss.item()
-            iter_loss += loss.item()
-            total += real_preds.shape[0] + fake_preds.shape[0]
-            iter_total += real_preds.shape[0] + fake_preds.shape[0]
-            
+
             real_count = ((real_preds >= 0.5) == 1).sum().item()
             fake_count = ((fake_preds < 0.5) == 0).sum().item()
             correct += real_count + fake_count
+            total += real_preds.shape[0] + fake_preds.shape[0]
             
-            iter_correct += real_count + fake_count
+            running_loss += loss.item()
+            train_steps += 1
+            log_steps += 1
             
-            if step % args.log_every_step == 0 and step != 0:
-                log_steps += args.log_every_step
+            if train_steps % args.log_every_step == 0:
                 # Measure training speed:
                 torch.cuda.synchronize()
                 end_time = time.time()
@@ -429,17 +432,6 @@ def main(args):
                 total = 0
                 start_time = time.time()
                 log_steps = 0
-                
-        dist.barrier()
-        avg_loss = torch.tensor(iter_loss / iter_steps, device=device)
-        dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
-        avg_loss = avg_loss.item() / dist.get_world_size()
-        correct = torch.tensor(iter_correct, device=device)
-        dist.all_reduce(correct, op=dist.ReduceOp.SUM)
-        correct = correct.item()
-        total = torch.tensor(iter_total, device=device)
-        dist.all_reduce(total, op=dist.ReduceOp.SUM)
-        total = total.item()
         
         if rank == 0:
             checkpoint = {"model": discriminator.state_dict()}
@@ -448,51 +440,30 @@ def main(args):
             checkpoint_path_fin = os.path.join(checkpoint_dir, f'iter{iter:03d}.pt')
             torch.save(checkpoint, checkpoint_path_fin)
             del checkpoint
-            logger.info(f"Saved discriminator checkpoint to {checkpoint_path_fin}")
-            
-            logger.info(f"(Iteration={iter}) Discriminator Loss: {avg_loss:.4f} GAN acc={(correct/total):.3f} ({correct}/{total}), Train Steps/Sec: {steps_per_sec:.2f} ")
-
+            logger.info(f"(Iteration={iter}) Saved discriminator checkpoint to {checkpoint_path_fin}")
+        dist.barrier()
+        
         # Train DiT with GAN guidance
         log_steps = 0
-        iter_steps = 0
+        train_steps = 0
         
         dif_running_loss = 0.0
-        iter_dif_loss = 0.0
         gan_running_loss = 0.0
-        iter_gan_loss = 0.0
         running_loss = 0.0
-        iter_loss = 0.0
         
         correct = 0
-        iter_correct = 0
         total = 0
-        iter_total = 0
         
-        model.train()
         requires_grad(discriminator, False)
         discriminator.eval()
+        model.train()
+        
         logger.info(f"Diffusion total step number: {args.total_steps}.")
-        
-        if iter==0:
-            if rank == 0:
-                checkpoint = {
-                    "model": model.module.state_dict(),
-                    "d_opt": diffusion_optimizer.state_dict(),
-                    "train_steps": 0,
-                    "ema": ema.state_dict(),
-                }
-                
-                checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
-                os.makedirs(checkpoint_dir, exist_ok=True)
-                checkpoint_path_fin = os.path.join(checkpoint_dir, f'iter{iter:03d}_{0:06d}.pt')
-                torch.save(checkpoint, checkpoint_path_fin)
-                logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
-        
+
         start_time = time.time()
         for step in range(args.total_steps+1):
             x, _ = next(data_iter)
             x = x.to(device)
-            #labels = torch.ones((x.size(0),1)).to(device)
             labels = torch.ones((x.size(0)), dtype=torch.int64).to(device)
             if step % len(loader) == 0 and step != 0:
                 sampler.set_epoch(step // len(loader))
@@ -502,19 +473,17 @@ def main(args):
             with torch.no_grad():
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
             
-            t = random.choices(sample_indices, k=x.shape[0])
-            t = torch.tensor(t, device=device)
+            t_gan = random.choices(sample_indices, k=x.shape[0])
+            t_gan = torch.tensor(t_gan, device=device)
 
-            loss_dict = diffusion.training_losses_output_xt(model, x, t)
+            loss_dict = diffusion.training_losses_output_xt(model, x, t_gan)
             pred_x = loss_dict["pred"]
-            dis_preds = discriminator(pred_x, t) 
+            dis_preds = discriminator(pred_x, t_gan) 
             gan_loss = gan_loss_func(dis_preds, labels)
             
             total += labels.size(0)
-            iter_total += labels.size(0)
             correct_count = ((dis_preds >= 0.5) == 1).sum().item()
             correct += correct_count
-            iter_correct += correct_count
             
             t = torch.randint(0, args.num_sampling_steps, (x.shape[0],), device=device)
             loss_dict = diffusion.training_losses(model, x, t)
@@ -529,15 +498,11 @@ def main(args):
             dif_running_loss += dif_loss.item()
             gan_running_loss += gan_loss.item()
             running_loss += loss.item()
-
-            iter_loss += loss.item()
-            iter_dif_loss += dif_loss.item()
-            iter_gan_loss += gan_loss.item()
             
-            iter_steps += 1
+            train_steps += 1
+            log_steps += 1
             
-            if step % args.log_every_step == 0 and step != 0:
-                log_steps += args.log_every_step
+            if train_steps % args.log_every_step == 0:
                 # Measure training speed:
                 torch.cuda.synchronize()
                 end_time = time.time()
@@ -575,7 +540,7 @@ def main(args):
                 start_time = time.time()
 
             # Save DiT checkpoint:
-            if step % args.ckpt_every_step == 0 and step != 0:
+            if train_steps % args.ckpt_every_step == 0:
                 if rank == 0:
                     checkpoint = {
                         "model": model.module.state_dict(),
@@ -589,29 +554,9 @@ def main(args):
                     checkpoint_path_fin = os.path.join(checkpoint_dir, f'iter{iter:03d}_{step:06d}.pt')
                     torch.save(checkpoint, checkpoint_path_fin)
                     logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
-        
-
-        iter_correct = torch.tensor(iter_correct, device=device)
-        dist.all_reduce(iter_correct, op=dist.ReduceOp.SUM)
-        iter_correct = iter_correct.item()
-        iter_total = torch.tensor(iter_total, device=device)
-        dist.all_reduce(iter_total, op=dist.ReduceOp.SUM)
-        iter_total = iter_total.item()
-
-        avg_loss = torch.tensor(iter_loss / iter_steps, device=device)
-        dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
-        avg_loss = avg_loss.item() / dist.get_world_size()
-
-        dif_avg_loss = torch.tensor(iter_dif_loss / iter_steps, device=device)
-        dist.all_reduce(dif_avg_loss, op=dist.ReduceOp.SUM)
-        dif_avg_loss = dif_avg_loss.item() / dist.get_world_size()
-        
-        gan_avg_loss = torch.tensor(iter_gan_loss / iter_steps, device=device)
-        dist.all_reduce(gan_avg_loss, op=dist.ReduceOp.SUM)
-        gan_avg_loss = gan_avg_loss.item() / dist.get_world_size()
-        
-        logger.info(f"(Iteration {iter}) step={step:07d} Loss: {avg_loss:.4f} Dif_Loss: {dif_avg_loss:.4f}, GAN_Loss: {args.alpha * gan_avg_loss:.4f}, GAN acc={(iter_correct/iter_total):.3f} ({iter_correct}/{iter_total})")
-        dist.barrier()
+                dist.barrier()
+                
+        logger.info(f"(Iteration {iter}) Train DiT done.")
         
             
 if __name__ == "__main__":
