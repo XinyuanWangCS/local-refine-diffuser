@@ -332,7 +332,7 @@ def main(args):
         
         checkpoint_dir = os.path.join(experiment_dir, 'checkpoints')
         os.makedirs(checkpoint_dir, exist_ok=True)
-        checkpoint_path_fin = os.path.join(checkpoint_dir, f'iter{iter:03d}_{0:06d}.pt')
+        checkpoint_path_fin = os.path.join(checkpoint_dir, f'iter{0:03d}_{0:06d}.pt')
         torch.save(checkpoint, checkpoint_path_fin)
         logger.info(f"Saved checkpoint to {checkpoint_path_fin}")
     dist.barrier()
