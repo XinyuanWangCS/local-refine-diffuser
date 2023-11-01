@@ -27,7 +27,7 @@ torchrun --nnodes=1 --nproc_per_node=4 src/fid_sample.py --experiment_dir result
 ### Evaluate trained checkpoins:
 example: the trained example above and lfw dataset
 ```bash
-python src/eval.py --experiment_dir results/perceptual_end_to_end-celebahq256-004-DiT_Uncondition-B-4/ --train_set_dir datasets/celebahq256/ --sample_folder_name fid_samples --output_file_name 'eval_scores.xlsx' --cal_kid False
+python src/eval.py --train_set_dir datasets/celebahq256/ --sample_folder_name fid_samples --output_file_name 'eval_scores.xlsx' --cal_kid False --experiment_dir results/perceptual_end_to_end-celebahq256-004-DiT_Uncondition-B-4/ 
 ```
 
 ### Sample images from a DiT model.   
@@ -94,6 +94,11 @@ torchrun --nnodes=1 --nproc_per_node=4 src/gan_pipeline_end_to_end_groupt.py --m
 CUDA_VISIBLE_DEVICES=0,1,2,3  torchrun --nnodes=1 --nproc_per_node=4 --master_port 29502 src/gan_pipeline_end_to_end_groupt.py --model DiT_Uncondition-B/4 --data_dir datasets/celebahq256/  --image_size 256 --total_steps 5000 --dis_total_steps 500 --global_batch_size 128 --ckpt_every_step 2500 --iteration_num 20 --num_samples 1280 --start_t 0 --end_t 200 --interval 50 --group 10 --discriminator condition_resnet --resume pretrained_models/00200000.pt --alpha 0.1
 ```
 
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3  torchrun --nnodes=1 --nproc_per_node=4 --master_port 29502 src/gan_pipeline_end_to_end_groupt.py --model DiT_Uncondition-B/4 --data_dir datasets/celebahq256/  --image_size 256 --total_steps 3000 --dis_total_steps 1000 --global_batch_size 128 --ckpt_every_step 1500 --iteration_num 20 --num_samples 1280 --start_t 10 --end_t 100 --interval 10 --group 10 --discriminator condition_resnet --resume pretrained_models/00200000.pt --alpha 0.1
+```
+
+
 torchrun --nnodes=1 --nproc_per_node=4 src/gd_sample_one_model_one_t.py --checkpoint_dir pretrained_models/256x256_diffusion_uncond.pt
 
 ### Memory requirement:
@@ -111,3 +116,15 @@ DiT baseline: 4 GPU 384 resume 320
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3  torchrun --nnodes=1 --nproc_per_node=4 --master_port 29502 src/fid_sample.py --experiment_dir results_new/10251044-gan_pipeline_end_to_end-celebahq256-DiT_Uncondition-B-4/ --model DiT_Uncondition-B/4 --fid_samples 128 --image-size 256 --global-batch-size 128 --num_sampling_steps 1000 --use_ema False
 ```
+
+# Eval
+
+CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --nnodes=1 --nproc_per_node=4 --master_port 29503 src/fid_sample.py --model DiT_Uncondition-B/4 --fid_samples 128 --image-size 256 --global-batch-size 128 --num_sampling_steps 1000 --use_ema False --experiment_dir 
+
+torchrun --nnodes=1 --nproc_per_node=7 src/fid_sample.py --model DiT_Uncondition-B/4 --fid_samples 112 --image-size 256 --global-batch-size 112 --num_sampling_steps 1000 --use_ema False --experiment_dir 
+
+torchrun --nnodes=1 --nproc_per_node=4 src/fid_sample.py --model DiT_Uncondition-B/4 --fid_samples 128 --image-size 256 --global-batch-size 128 --num_sampling_steps 1000 --use_ema False --experiment_dir 
+
+# Contrastive 
+
+torchrun --nnodes=1 --nproc_per_node=4 src/contrastive_dit.py --model DiT_Uncondition-B/4 --data_dir datasets/celebahq256 --image_size 64 --total_steps 100000 --ckpt_every_step 5000  --global_batch_size 64 --use_ema True 

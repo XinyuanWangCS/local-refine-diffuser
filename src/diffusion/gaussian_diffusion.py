@@ -118,6 +118,11 @@ def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
             num_diffusion_timesteps,
             lambda t: math.cos((t + 0.008) / 1.008 * math.pi / 2) ** 2,
         )
+    elif schedule_name == "cosine":
+        return betas_for_alpha_bar(
+            num_diffusion_timesteps,
+            lambda t: math.cos((t + 0.008) / 1.008 * math.pi / 2) ** 2,
+        )
     else:
         raise NotImplementedError(f"unknown beta schedule: {schedule_name}")
 
@@ -863,6 +868,7 @@ class GaussianDiffusion:
             "pred_x0": x_t
         }
         return terms
+    
     
     
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):

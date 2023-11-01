@@ -197,7 +197,7 @@ if __name__ == "__main__":
     parser.add_argument("--save_dir", type=str, default='fid_samples')
     parser.add_argument("--ckpt_folder", type=str, default='checkpoints')
     parser.add_argument("--model", type=str, choices=list(DiT_Uncondition_models.keys()), default="DiT_Uncondition-S/4")
-    parser.add_argument("--image-size", type=int, choices=[128, 224, 256, 512], default=256)
+    parser.add_argument("--image-size", type=int, choices=[64, 128, 224, 256, 512], default=256)
     parser.add_argument("--global-batch-size", type=int, default=256)
     parser.add_argument("--global-seed", type=int, default=0)
     parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="ema")  # Choice doesn't affect training

@@ -19,7 +19,7 @@ from tqdm import tqdm
 from PIL import Image
 import argparse
 import os
-from model_structures.script_util import create_model
+from utils.unet_utils import create_unet_model_and_diffusion, model_and_diffusion_defaults
 
 def str2bool(v):
     if isinstance(v, bool):
@@ -94,44 +94,6 @@ def generate_samples(ckpt_name, save_dir, model, diffusion, rank, device, seed, 
                 
             total += global_batch_size
 
-def diffusion_defaults():
-    """
-    Defaults for image and classifier training.
-    """
-    return dict(
-        learn_sigma=True,
-        diffusion_steps=1000,
-        noise_schedule="linear",
-        timestep_respacing="",
-        use_kl=False,
-        predict_xstart=False,
-        rescale_timesteps=False,
-        rescale_learned_sigmas=False,
-    )
-
-def model_defaults():
-    """
-    Defaults for image training.
-    """
-    res = dict(
-        image_size=256,
-        num_channels=256,
-        num_res_blocks=2,
-        num_heads=4,
-        num_heads_upsample=-1,
-        num_head_channels=64,
-        attention_resolutions="32,16,8",
-        channel_mult="",
-        dropout=0.1,
-        class_cond=False,
-        use_checkpoint=False,
-        learn_sigma=True,
-        use_scale_shift_norm=True,
-        resblock_updown=True,
-        use_fp16=False,
-        use_new_attention_order=False,
-    )
-    return res
 
 def main(args):
     """
@@ -149,7 +111,6 @@ def main(args):
     torch.cuda.set_device(device)
     print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
 
-    num_sampling_steps = args.num_sampling_steps
     batch_size=int(args.global_batch_size // dist.get_world_size())
 
     # Setup an experiment folder:
@@ -160,12 +121,20 @@ def main(args):
     save_dir = args.save_dir
     os.makedirs(save_dir, exist_ok=True)
 
-    diffusion = create_diffusion(str(num_sampling_steps))  # default: 1000 steps, linear noise schedule
-
-    model = None
+    model_diffusion_defaults = model_and_diffusion_defaults()
+    cifar_args = dict(
+        image_size = 32, 
+        num_channels = 128,
+        num_res_blocks = 3,
+        learn_sigma = True,
+        dropout = 0.3,
+        diffusion_steps = 4000,
+        noise_schedual = "cosine",
+        )
+    model_diffusion_defaults.update(cifar_args)
+    model, diffusion = create_unet_model_and_diffusion(**model_diffusion_defaults)
     ckpt = torch.load(checkpoint_dir, map_location=torch.device(f'cpu'))
-    model_args = model_defaults()
-    model = create_model(**model_args).to(device)
+    model.to(device)
 
     model.load_state_dict(ckpt)
     del ckpt
@@ -184,23 +153,24 @@ def main(args):
             diffusion=diffusion, 
             rank=rank, 
             device=device, 
-            latent_size=model_args['image_size'],
+            latent_size=args.image_size,
             end_step = args.end_step,
-            num_samples=args.fid_samples, 
+            num_samples=args.sample_num, 
             n=batch_size,
             seed=seed)
     if rank == 0:    
-        print(f"Saved {args.fid_samples} images to {args.save_dir}")        
+        print(f"Saved {args.sample_num} images to {args.save_dir}")        
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint_dir", type=str, required=True)
     parser.add_argument("--save_dir", type=str, default='results/samples')
-    parser.add_argument("--global_batch_size", type=int, default=64)
+    parser.add_argument("--image_size", type=int, default=64)
+    parser.add_argument("--global_batch_size", type=int, default=128)
     parser.add_argument("--global_seed", type=int, default=0)
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--fid_samples", type=int, default=200)
+    parser.add_argument("--sample_num", type=int, default=128)
     parser.add_argument("--num_sampling_steps", type=int, default=1000)
     parser.add_argument("--end_step", type=int, default=0)
     args = parser.parse_args()

@@ -68,7 +68,7 @@ def main(args):
     train_set_dir = args.train_set_dir
     results = []
 
-    for ckpt_name in sorted(os.listdir(sample_dir), key=int): #digit names
+    for ckpt_name in sorted(os.listdir(sample_dir)): #digit names
         # Make a new directory inside the checkpoint's directory for the sampled images
         sample_dir_path = os.path.join(sample_dir, ckpt_name) #e.g. "./results/001-DiT-S-4/checkpoints/0000001/sampled_images"
         print('------------------------------------------------------------')
